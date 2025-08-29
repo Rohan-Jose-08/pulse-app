@@ -1,0 +1,63 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /users/{document} {
+      allow create: if request.auth.uid == document;
+      allow read: if request.auth.uid == document;
+      allow write: if request.auth.uid == document;
+      allow delete: if false;
+    }
+
+    // Chats collection security
+    match /chats/{chatId} {
+      // Allow creating a chat if the authenticated user is one of the participants
+      allow create: if request.auth != null
+        && request.resource.data.participants is list
+        && request.resource.data.participants.size() > 0
+        && request.resource.data.participants.hasOnly([x for x in request.resource.data.participants where x is string])
+        && request.resource.data.participants.hasAny([request.auth.uid]);
+
+      // Read/update/delete only if the user is a participant of this chat
+      allow read, update, delete: if request.auth != null
+        && (
+          // On update, check the new doc's participants if provided, else existing
+          (request.resource != null && request.resource.data.participants.hasAny([request.auth.uid])) ||
+          (resource != null && resource.data.participants.hasAny([request.auth.uid]))
+        );
+
+      // Messages subcollection
+      match /messages/{messageId} {
+        // Participants can read messages
+        allow read: if request.auth != null
+          && get(/databases/$(database)/documents/chats/$(chatId)).data.participants.hasAny([request.auth.uid]);
+
+        // Participants can send messages (create only)
+        allow create: if request.auth != null
+          && get(/databases/$(database)/documents/chats/$(chatId)).data.participants.hasAny([request.auth.uid])
+          && request.resource.data.keys().hasOnly(['senderId','text','imageUrl','timestamp'])
+          && request.resource.data.senderId == request.auth.uid
+          && (
+            (request.resource.data.text is string && request.resource.data.text.size() <= 4000) ||
+            (request.resource.data.text == null)
+          )
+          && (
+            (request.resource.data.imageUrl is string && request.resource.data.imageUrl.size() <= 2048) ||
+            (request.resource.data.imageUrl == null)
+          )
+          && request.resource.data.timestamp == request.time;
+
+        // Prevent edits/deletes of messages for now (append-only)
+        allow update, delete: if false;
+      }
+
+      // Typing indicators subcollection (optional UX)
+      match /typing/{userId} {
+        allow read: if request.auth != null
+          && get(/databases/$(database)/documents/chats/$(chatId)).data.participants.hasAny([request.auth.uid]);
+        allow write: if request.auth != null
+          && request.auth.uid == userId
+          && get(/databases/$(database)/documents/chats/$(chatId)).data.participants.hasAny([request.auth.uid]);
+      }
+    }
+  }
+}

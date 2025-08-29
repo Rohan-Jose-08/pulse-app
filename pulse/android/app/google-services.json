@@ -1,0 +1,70 @@
+{
+  "project_info": {
+    "project_number": "586345699100",
+    "project_id": "pulsesocial",
+    "storage_bucket": "pulsesocial.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:586345699100:android:21a3a8eaf1beb63b0eccd9",
+        "android_client_info": {
+          "package_name": "com.example.pulse"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "586345699100-ek5r7gqpddkff18calmq32lhrp0adqhi.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.example.pulse",
+            "certificate_hash": "9bbb3186b2189ef16d8f272bdab59362c395cbb4"
+          }
+        },
+        {
+          "client_id": "586345699100-jvnjhvadl37p30cs0kdu9hnrk0t31naf.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.example.pulse",
+            "certificate_hash": "f95d236c67166569167f9e85b360eaf0ebb7fc0f"
+          }
+        },
+        {
+          "client_id": "586345699100-v6skp1hjdh77fbkde7toqklm5g79tj8h.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.example.pulse",
+            "certificate_hash": "9d66a752a10c77b549ccbd260c167a2a813d0502"
+          }
+        },
+        {
+          "client_id": "586345699100-iunjogug502o41sjd6s9rlesn1k4rbm3.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBiKdAh4ZVnppsGIk_1fBBHtLUzxzpqIDM"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "586345699100-iunjogug502o41sjd6s9rlesn1k4rbm3.apps.googleusercontent.com",
+              "client_type": 3
+            },
+            {
+              "client_id": "586345699100-r0a436npm653rvg7en2v1vomicau2o3c.apps.googleusercontent.com",
+              "client_type": 2,
+              "ios_info": {
+                "bundle_id": "com.example.pulse"
+              }
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

@@ -1,0 +1,315 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
+// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
+
+generator client {
+  provider = "prisma-client-js"
+  // output   = "../generated/prisma"
+  binaryTargets   = ["native", "darwin"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  // This 'id' will store the Firebase UID
+  id        String    @id @unique @map("firebase_uid") // Use @map to give it a clearer database column name if preferred
+  email     String    @unique
+  displayName String?
+  firebaseUid String   @unique
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  // Profile enhancement fields
+  bio         String?
+  profileImageUrl String?
+  // Human readable location label provided by user (e.g. "London, UK") – kept for quick display; canonical structured location below
+  locationLabel    String?
+  // Reference to structured Location row (latitude/longitude + address components)
+  locationId       Int?
+  location         Location? @relation(fields: [locationId], references: [id])
+  locationUpdatedAt  DateTime?
+  website     String?
+  socialLinks Json? // Store social media links as JSON object
+  interests   String[] // Array of user interests
+  isVerified  Boolean @default(false)
+  followersCount Int @default(0)
+  followingCount Int @default(0)
+  
+  // Additional profile fields for enhanced features
+  phoneNumber String?
+  dateOfBirth DateTime?
+  gender      String?
+  occupation  String?
+  company     String?
+  education   String?
+  languages   String[] // Array of languages user speaks
+  timezone    String?
+  preferences Json? // Store user preferences as JSON object
+  
+  // Social features
+  followers   Follow[] @relation("UserFollowers")
+  following   Follow[] @relation("UserFollowing")
+  
+  // Content
+  createdPulses Pulse[] @relation("CreatedPulses")
+  participatingPulses Pulse[] @relation("PulseParticipants")
+  
+  // Posts (for future implementation)
+  posts       Post[]   @relation("UserPosts")
+  
+  // Notifications
+  notifications Notification[] @relation("UserNotifications")
+
+  // Messaging
+  conversations Conversation[] @relation("ConversationParticipants")
+  sentMessages  Message[]
+  messageReactions MessageReaction[]
+
+  // Invitations (group chat / pulse invites)
+  sentInvitations     ConversationInvitation[] @relation("ConversationInviter")
+  receivedInvitations ConversationInvitation[] @relation("ConversationInvitee")
+
+  @@index([locationId])
+}
+
+model Pulse {
+  id           String    @id @default(cuid())
+  title        String
+  description  String
+  // Structured location reference (nullable for legacy pulses without location)
+  locationId   Int?
+  location     Location? @relation(fields: [locationId], references: [id])
+  eventTime    DateTime
+  // Active window for the pulse (when it should be considered live/visible as active)
+  activeFrom   DateTime  @default(now())
+  activeUntil  DateTime? // Optional; if null, client may treat eventTime or other heuristics
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+  isPublic     Boolean   @default(true)
+  tags         String[]
+  imageUrl     String?   // URL of the pulse image
+
+  // Creator of the pulse
+  authorId     String
+  author       User      @relation("CreatedPulses", fields: [authorId], references: [id])
+
+  // Participants
+  participants User[]    @relation("PulseParticipants")
+  
+  // Additional pulse features
+  maxParticipants Int?
+  currentParticipants Int @default(0)
+  category    String?
+  difficulty  String? // Easy, Medium, Hard
+  price       Decimal? @db.Decimal(10, 2)
+  currency    String? @default("USD")
+  isRecurring Boolean @default(false)
+  recurrencePattern Json? // Store recurrence pattern as JSON
+
+  // Back relation to conversations (group chat)
+  conversations Conversation[]
+
+  @@index([activeFrom])
+  @@index([activeUntil])
+  @@index([activeFrom, activeUntil])
+  @@index([locationId])
+}
+
+// Structured location shared by Users and Pulses
+model Location {
+  id         Int      @id @default(autoincrement())
+  name       String   // Short label or place name (e.g. "Central Park")
+  street     String
+  city       String
+  state      String
+  postalCode String
+  country    String
+  latitude   Float
+  longitude  Float
+  // Exact venue / external provider enrichment
+  // Google Places (or other) place identifier when sourced from an autocomplete/details flow
+  placeId           String?   // Partial unique index applied via migration (WHERE placeId IS NOT NULL)
+  // Full formatted address returned by provider (if any)
+  formattedAddress  String?
+  // Provider place types (Google) or internal classification tags
+  types             String[]  @default([])
+  // Raw provider address components / payload for future parsing (NOT PII beyond address)
+  raw               Json?
+  // Source of this location record (e.g. GOOGLE_PLACES, REVERSE_GEOCODE, MANUAL)
+  locationSource    String?
+  // Optional horizontal accuracy in meters if client provided an exact device reading
+  accuracyMeters    Int?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  // Back relations
+  users   User[]
+  pulses  Pulse[]
+
+  @@index([latitude, longitude])
+  @@index([city])
+  @@index([country])
+  @@index([placeId])
+}
+
+// Follow relationship for social features
+model Follow {
+  id          String   @id @default(cuid())
+  followerId  String
+  followingId String
+  createdAt   DateTime @default(now())
+  
+  follower    User     @relation("UserFollowers", fields: [followerId], references: [id], onDelete: Cascade)
+  following   User     @relation("UserFollowing", fields: [followingId], references: [id], onDelete: Cascade)
+  
+  @@unique([followerId, followingId])
+  @@index([followerId])
+  @@index([followingId])
+}
+
+// Post model for future social features
+model Post {
+  id          String   @id @default(cuid())
+  content     String
+  imageUrl    String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  isPublic    Boolean  @default(true)
+  
+  authorId    String
+  author      User     @relation("UserPosts", fields: [authorId], references: [id], onDelete: Cascade)
+  
+  // Post interactions
+  likes       Like[]   @relation("PostLikes")
+  comments    Comment[] @relation("PostComments")
+  
+  @@index([authorId])
+  @@index([createdAt])
+}
+
+// Like model for post interactions
+model Like {
+  id        String   @id @default(cuid())
+  postId    String
+  userId    String
+  createdAt DateTime @default(now())
+  
+  post      Post     @relation("PostLikes", fields: [postId], references: [id], onDelete: Cascade)
+  
+  @@unique([postId, userId])
+  @@index([postId])
+  @@index([userId])
+}
+
+// Comment model for post interactions
+model Comment {
+  id        String   @id @default(cuid())
+  content   String
+  postId    String
+  userId    String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  
+  post      Post     @relation("PostComments", fields: [postId], references: [id], onDelete: Cascade)
+  
+  @@index([postId])
+  @@index([userId])
+}
+
+// Notification model for user notifications
+model Notification {
+  id          String   @id @default(cuid())
+  type        String   // Follow, Like, Comment, Pulse, etc.
+  title       String
+  message     String
+  isRead      Boolean  @default(false)
+  data        Json?    // Additional notification data
+  createdAt   DateTime @default(now())
+  
+  userId      String
+  user        User     @relation("UserNotifications", fields: [userId], references: [id], onDelete: Cascade)
+  
+  @@index([userId])
+  @@index([isRead])
+  @@index([createdAt])
+}
+
+// Real-time messaging models
+model Conversation {
+  id              String   @id @default(cuid())
+  participants    User[]   @relation("ConversationParticipants")
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  lastMessageText String?
+  lastSenderId    String?
+  messages        Message[]
+
+  // Link to a Pulse when this is a pulse group chat (temporary room)
+  pulseId   String?
+  pulse     Pulse?   @relation(fields: [pulseId], references: [id], onDelete: Cascade)
+  // Group chat metadata
+  isGroup   Boolean  @default(false)
+  name      String?
+  avatarUrl String?
+
+  invitations ConversationInvitation[]
+
+  @@unique([pulseId])
+}
+
+model Message {
+  id             String   @id @default(cuid())
+  conversationId String
+  senderId       String
+  text           String?
+  imageUrl       String?
+  videoUrl       String?
+  createdAt      DateTime @default(now())
+
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  sender         User         @relation(fields: [senderId], references: [id], onDelete: Cascade)
+  reactions      MessageReaction[]
+
+  @@index([conversationId])
+  @@index([senderId])
+}
+
+model MessageReaction {
+  id        String   @id @default(cuid())
+  messageId String
+  userId    String
+  emoji     String
+  createdAt DateTime @default(now())
+
+  message Message @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([messageId, userId, emoji])
+  @@index([messageId])
+  @@index([userId])
+  @@index([emoji])
+}
+
+// Conversation invitation (for inviting users to group chats / pulse chats)
+model ConversationInvitation {
+  id             String        @id @default(cuid())
+  conversationId String
+  conversation   Conversation  @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  inviterId      String
+  inviter        User          @relation("ConversationInviter", fields: [inviterId], references: [id], onDelete: Cascade)
+  inviteeId      String
+  invitee        User          @relation("ConversationInvitee", fields: [inviteeId], references: [id], onDelete: Cascade)
+  status         String        @default("PENDING") // PENDING, ACCEPTED, DECLINED, REVOKED
+  createdAt      DateTime      @default(now())
+  respondedAt    DateTime?
+
+  @@unique([conversationId, inviteeId])
+  @@index([inviteeId])
+  @@index([conversationId])
+  @@index([status])
+}

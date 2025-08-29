@@ -1,0 +1,15 @@
+# Flutter/Dart build and tool files
+pulse/build/
+pulse/.dart_tool/
+*.apk
+*.dill
+*.so
+# Android Studio/IntelliJ
+.idea/
+# VS Code
+.vscode/
+# MacOS
+.DS_Store
+# Node
+backend/generated/
+backend/node_modules/

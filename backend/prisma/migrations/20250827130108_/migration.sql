@@ -1,0 +1,3 @@
+-- AlterTable
+ALTER TABLE "public"."Pulse" ALTER COLUMN "activeFrom" SET DATA TYPE TIMESTAMP(3),
+ALTER COLUMN "activeUntil" SET DATA TYPE TIMESTAMP(3);
