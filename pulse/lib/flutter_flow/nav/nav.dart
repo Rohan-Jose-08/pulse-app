@@ -17,6 +17,7 @@ import '/pages/search_explore/search_explore_page.dart';
 import '/pages/pulse_detail/pulse_detail_page.dart';
 import '/pages/edit_pulse/edit_pulse_widget.dart';
 import '/pages/discovery/pulse_discovery_map_page.dart';
+import '/pages/map/dual_layer_map_page.dart';
 // Home page imports removed as Home route is deprecated; Search is primary landing
 
 export 'package:go_router/go_router.dart';
@@ -120,6 +121,13 @@ GoRouter createRouter(AppStateNotifier appStateNotifier) => GoRouter(
           requireAuth: true,
           builder: (context, params) =>
               RootPageContext.wrap(const PulseDiscoveryMapPage()),
+        ),
+        FFRoute(
+          name: 'dualLayerMap',
+          path: '/map',
+          requireAuth: true,
+          builder: (context, params) =>
+              RootPageContext.wrap(const DualLayerMapPage()),
         ),
         FFRoute(
           name: EditPulseWidget.routeName,

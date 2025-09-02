@@ -97,13 +97,16 @@ final _pulseItemsProvider =
     FutureProvider.autoDispose<List<_PulseItem>>((ref) async {
   final filters = ref.watch(_filtersProvider);
   final center = ref.watch(_currentLocationProvider);
-  if (center == null) return [];
-  final pulses = await ApiService.instance.getNearbyPulses(
-    latitude: center.latitude,
-    longitude: center.longitude,
-    radiusKm: filters.radiusKm,
-  );
-  // Backend returns location inside location object
+  List<Map<String, dynamic>>? pulses;
+  if (center != null) {
+    pulses = await ApiService.instance.getNearbyPulses(
+      latitude: center.latitude,
+      longitude: center.longitude,
+      radiusKm: filters.radiusKm,
+    );
+  }
+  // Fallback to global public pulses if no location or empty nearby
+  pulses ??= await ApiService.instance.getPublicPulses(limit: 100);
   final list = (pulses ?? []).where((p) {
     final loc = p['location'];
     return loc is Map && loc['latitude'] != null && loc['longitude'] != null;
@@ -146,7 +149,7 @@ class _PulseDiscoveryMapPageState extends ConsumerState<PulseDiscoveryMapPage> {
   // bool _searching = false; // reserved for future textual filtering of markers
   final TextEditingController _searchCtrl = TextEditingController();
   Timer? _debounce;
-  LatLng _center = const LatLng(37.7749, -122.4194); // default SF
+  LatLng _center = const LatLng(51.5074, -0.1278); // default London
   StreamSubscription? _pulseRefreshTimer;
 
   @override
@@ -222,7 +225,23 @@ class _PulseDiscoveryMapPageState extends ConsumerState<PulseDiscoveryMapPage> {
           markerId: MarkerId('single_${data['id'] ?? data.hashCode}'),
           position: pos,
           icon: BitmapDescriptor.defaultMarkerWithHue(hue),
-          onTap: () => isPulse ? _openPulseSheet(data) : _openUserSheet(data),
+          onTap: () {
+            if (isPulse) {
+              final id = data['id']?.toString();
+              if (id != null && id.isNotEmpty) {
+                context.pushNamed(
+                  PulseDetailPage.routeName,
+                  pathParameters: {'id': id},
+                  extra: {'pulse': data},
+                );
+              } else {
+                // Fallback to previous sheet if id missing
+                _openPulseSheet(data);
+              }
+            } else {
+              _openUserSheet(data);
+            }
+          },
         ));
       } else {
         // cluster marker

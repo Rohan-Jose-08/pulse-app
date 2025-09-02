@@ -9,7 +9,8 @@ import 'package:google_fonts/google_fonts.dart';
 import 'navbar_model.dart';
 import '/pages/search/search_widget.dart';
 import '/pages/search_explore/search_explore_page.dart';
-import '/pages/discovery/pulse_discovery_map_page.dart';
+import '/pages/discovery/pulse_discovery_map_page.dart'; // legacy map (kept for backward compatibility)
+import '/pages/map/dual_layer_map_page.dart';
 import '/pages/create_pulse/create_pulse_widget.dart';
 import '/pages/profile/profile_widget.dart';
 import '/pages/messaging/messages_hub_widget.dart';
@@ -91,8 +92,9 @@ class _NavbarWidgetState extends State<NavbarWidget>
     setState(() {
       if (currentRoute == '/' || currentRoute == SearchWidget.routePath) {
         _selectedIndex = 0; // Search
-      } else if (currentRoute == PulseDiscoveryMapPage.routePath) {
-        _selectedIndex = 1; // Map
+      } else if (currentRoute == DualLayerMapPage.routePath ||
+          currentRoute == PulseDiscoveryMapPage.routePath) {
+        _selectedIndex = 1; // Map (new dual layer)
       } else if (currentRoute == SearchExplorePage.routePath) {
         _selectedIndex = 2; // Explore
       } else if (currentRoute == CreatePulseWidget.routePath) {
@@ -123,7 +125,7 @@ class _NavbarWidgetState extends State<NavbarWidget>
         context.goNamed(SearchWidget.routeName);
         break;
       case 1:
-        context.goNamed(PulseDiscoveryMapPage.routeName);
+        context.goNamed(DualLayerMapPage.routeName);
         break;
       case 2:
         context.goNamed(SearchExplorePage.routeName);
@@ -189,7 +191,7 @@ class _NavbarWidgetState extends State<NavbarWidget>
                     _buildNavItem(0, Icons.search_rounded, 'Search',
                         SearchWidget.routePath),
                     _buildNavItem(1, Icons.public_rounded, 'Map',
-                        PulseDiscoveryMapPage.routePath),
+                        DualLayerMapPage.routePath),
                     _buildNavItem(2, Icons.explore_rounded, 'Explore',
                         SearchExplorePage.routePath),
                     _buildNavItem(3, Icons.add_circle_rounded, 'Create',

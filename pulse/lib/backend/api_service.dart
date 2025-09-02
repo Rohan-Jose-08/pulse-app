@@ -897,6 +897,7 @@ class ApiService {
   }) async {
     try {
       final token = await _getAuthToken();
+      // _baseUrl already includes '/api'; avoid duplicating it.
       final url =
           '$_baseUrl/pulses/nearby?lat=$latitude&lng=$longitude&radiusKm=$radiusKm';
       final resp =
@@ -911,6 +912,27 @@ class ApiService {
       }
     } catch (e) {
       print('Error getNearbyPulses: $e');
+    }
+    return null;
+  }
+
+  // Public pulses listing (global) – relies on server including location
+  Future<List<Map<String, dynamic>>?> getPublicPulses({int limit = 100}) async {
+    try {
+      final token = await _getAuthToken();
+      final url = '$_baseUrl/pulses/public?limit=$limit';
+      final resp =
+          await _client.get(Uri.parse(url), headers: _getHeaders(token));
+      if (resp.statusCode == 200) {
+        final data = jsonDecode(resp.body);
+        if (data is Map && data['pulses'] is List) {
+          return List<Map<String, dynamic>>.from(data['pulses']);
+        }
+      } else {
+        print('Failed getPublicPulses: ${resp.statusCode} ${resp.body}');
+      }
+    } catch (e) {
+      print('Error getPublicPulses: $e');
     }
     return null;
   }
@@ -1767,4 +1789,32 @@ class ApiService {
   }) =>
       getNearbyUsers(
           latitude: latitude, longitude: longitude, radiusKm: radiusKm);
+
+  // Combined map overview (public pulses + users) to reduce round trips
+  Future<Map<String, dynamic>?> getMapOverview({
+    required double latitude,
+    required double longitude,
+    double radiusKm = 5,
+    bool includePulses = true,
+    bool includeUsers = true,
+  }) async {
+    try {
+      final token = await _getAuthToken();
+      final layers =
+          [if (includePulses) 'events', if (includeUsers) 'people'].join(',');
+      final url =
+          '$_baseUrl/map/overview?lat=$latitude&lng=$longitude&radiusKm=$radiusKm&layers=$layers';
+      final resp =
+          await _client.get(Uri.parse(url), headers: _getHeaders(token));
+      if (resp.statusCode == 200) {
+        final data = jsonDecode(resp.body);
+        if (data is Map<String, dynamic>) return data;
+      } else {
+        print('getMapOverview failed: ${resp.statusCode} ${resp.body}');
+      }
+    } catch (e) {
+      print('Error getMapOverview: $e');
+    }
+    return null;
+  }
 }

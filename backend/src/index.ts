@@ -261,8 +261,123 @@ app.get('/api/pulses', async (req, res) => {
   }
 });
 
-// Geospatial: find nearby pulses using PostGIS. Query params: lat, lng, radiusKm (default 5)
-// (Removed) nearby geospatial endpoint
+// Geospatial: find nearby pulses using bounding box + haversine (public pulses only)
+// NOTE: Must be defined BEFORE parameterized '/api/pulses/:id' to avoid 'nearby' being treated as an id.
+app.get('/api/pulses/nearby', async (req, res) => {
+  try {
+    const { lat, lng, radiusKm = '5' } = req.query as { lat?: string; lng?: string; radiusKm?: string };
+    if (!lat || !lng) return res.status(400).json({ error: 'lat and lng are required' });
+    const latitude = parseFloat(lat); const longitude = parseFloat(lng); const radius = parseFloat(String(radiusKm));
+    if ([latitude, longitude, radius].some(v => isNaN(v))) return res.status(400).json({ error: 'Invalid numeric parameters' });
+    const latDelta = radius / 111; const lngDelta = radius / (111 * Math.cos(latitude * Math.PI/180));
+    const minLat = latitude - latDelta; const maxLat = latitude + latDelta;
+    const minLng = longitude - lngDelta; const maxLng = longitude + lngDelta;
+    const pulses = await prisma.pulse.findMany({
+      where: { isPublic: true, location: { is: { latitude: { gte: minLat, lte: maxLat }, longitude: { gte: minLng, lte: maxLng } } } },
+      include: { author: { select: { id: true, displayName: true, email: true, profileImageUrl: true } }, participants: { select: { id: true, displayName: true, email: true, profileImageUrl: true } }, location: true },
+      take: 400
+    });
+    const within = pulses.map(p => {
+      if (!p.location) return null; const d = haversineKm(p.location.latitude, p.location.longitude, latitude, longitude); (p as any).distanceKm = d; return d <= radius ? p : null;
+    }).filter(Boolean).sort((a: any,b: any)=>a.distanceKm-b.distanceKm).slice(0,300);
+    res.json({ center: { latitude, longitude }, radiusKm: radius, count: within.length, pulses: within });
+  } catch (e) { console.error('nearby pulses error', e); res.status(500).json({ error: 'Failed nearby pulses search' }); }
+});
+
+// Combined map overview (public pulses + users) for dual-layer map
+// GET /api/map/overview?lat=&lng=&radiusKm=5&layers=events,people
+// layers param optional (comma list) default both. Returns pulses (public, within radius) and users (with location, within radius)
+app.get('/api/map/overview', async (req, res) => {
+  try {
+    const { lat, lng, radiusKm = '5', layers } = req.query as { lat?: string; lng?: string; radiusKm?: string; layers?: string };
+    if (!lat || !lng) return res.status(400).json({ error: 'lat and lng are required' });
+    const latitude = parseFloat(lat); const longitude = parseFloat(lng); let radius = parseFloat(String(radiusKm));
+    if ([latitude, longitude, radius].some(v => isNaN(v))) return res.status(400).json({ error: 'Invalid numeric parameters' });
+    if (radius <= 0) radius = 5;
+    // bounding box
+    const latDelta = radius / 111; const lngDelta = radius / (111 * Math.cos(latitude * Math.PI/180));
+    const minLat = latitude - latDelta; const maxLat = latitude + latDelta;
+    const minLng = longitude - lngDelta; const maxLng = longitude + lngDelta;
+    const wantEvents = !layers || layers.split(',').includes('events') || layers.split(',').includes('pulses');
+    const wantPeople = !layers || layers.split(',').includes('people') || layers.split(',').includes('users');
+
+    const now = new Date();
+    const promises: Promise<any>[] = [];
+    if (wantEvents) {
+      const p = prisma.pulse.findMany({
+        where: { isPublic: true, location: { is: { latitude: { gte: minLat, lte: maxLat }, longitude: { gte: minLng, lte: maxLng } } } },
+        include: { author: { select: { id: true, displayName: true, profileImageUrl: true } }, participants: { select: { id: true } }, location: true },
+        take: 500
+      }).then(list => list.map(p => {
+        if (!p.location) return null;
+        const d = haversineKm(p.location.latitude, p.location.longitude, latitude, longitude);
+        if (d > radius) return null;
+        return {
+          id: p.id,
+            title: p.title,
+            category: p.category || (p.tags && p.tags.length ? p.tags[0] : undefined),
+            location: { lat: p.location.latitude, lng: p.location.longitude },
+            attendeeCount: (p.participants?.length || 0) + 1,
+            eventTime: p.eventTime,
+            activeFrom: p.activeFrom,
+            activeUntil: p.activeUntil,
+            isActive: p.activeFrom <= now && (!p.activeUntil || p.activeUntil >= now),
+            distanceKm: d,
+        };
+      }).filter(Boolean).sort((a:any,b:any)=>a.distanceKm-b.distanceKm));
+      promises.push(p);
+    } else { promises.push(Promise.resolve([])); }
+    if (wantPeople) {
+      const u = prisma.user.findMany({
+        where: { location: { latitude: { gte: minLat, lte: maxLat }, longitude: { gte: minLng, lte: maxLng } } },
+        select: { id: true, displayName: true, profileImageUrl: true, bio: true, locationUpdatedAt: true, location: { select: { latitude: true, longitude: true } } },
+        take: 800
+      }).then(list => list.map(u => {
+        if (!u.location) return null;
+        const d = haversineKm(u.location.latitude, u.location.longitude, latitude, longitude);
+        if (d > radius) return null;
+        return {
+          id: u.id,
+          name: u.displayName,
+          avatarUrl: u.profileImageUrl,
+          status: u.bio,
+          location: { lat: u.location.latitude, lng: u.location.longitude },
+          distanceKm: d,
+          isActive: u.locationUpdatedAt ? (now.getTime() - new Date(u.locationUpdatedAt).getTime()) < 10*60*1000 : false,
+        };
+      }).filter(Boolean).sort((a:any,b:any)=>a.distanceKm-b.distanceKm));
+      promises.push(u);
+    } else { promises.push(Promise.resolve([])); }
+
+    const [pulses, users] = await Promise.all(promises);
+    res.json({ center: { latitude, longitude }, radiusKm: radius, counts: { pulses: pulses.length, users: users.length }, pulses, users });
+  } catch (e) {
+    console.error('map overview error', e);
+    res.status(500).json({ error: 'Failed map overview' });
+  }
+});
+
+// Public pulses listing (global discovery) limited, only pulses with a location
+app.get('/api/pulses/public', async (req, res) => {
+  try {
+    const limitRaw = String(req.query.limit ?? '50');
+    const limit = Math.min(Math.max(parseInt(limitRaw, 10) || 50, 1), 200);
+    const pulses = await prisma.pulse.findMany({
+      where: { isPublic: true, location: { isNot: null } },
+      include: {
+        author: { select: { id: true, displayName: true, profileImageUrl: true } },
+        participants: { select: { id: true, displayName: true, profileImageUrl: true } },
+        location: { select: { id: true, name: true, city: true, country: true, latitude: true, longitude: true } }
+      },
+      orderBy: { createdAt: 'desc' },
+      take: limit
+    });
+    res.json({ count: pulses.length, pulses });
+  } catch (e) {
+    console.error('public pulses list error', e);
+    res.status(500).json({ error: 'Failed public pulses list' });
+  }
+});
 
 // New route to get a specific pulse by ID (authentication required)
 app.get('/api/pulses/:id', authenticateUser, async (req, res) => {
@@ -549,47 +664,7 @@ app.post('/api/pulses', authenticateUser, async (req, res) => {
   }
 });
 
-// GET /api/pulses/nearby?lat=..&lng=..&radiusKm=.. - public pulses nearby using bounding box + haversine on Location
-app.get('/api/pulses/nearby', async (req, res) => {
-  try {
-    const { lat, lng, radiusKm = '5' } = req.query as { lat?: string; lng?: string; radiusKm?: string };
-    if (!lat || !lng) return res.status(400).json({ error: 'lat and lng are required' });
-    const latitude = parseFloat(lat); const longitude = parseFloat(lng); const radius = parseFloat(String(radiusKm));
-    if ([latitude, longitude, radius].some(v => isNaN(v))) return res.status(400).json({ error: 'Invalid numeric parameters' });
-    // Bounding box prefilter
-    const latDelta = radius / 111; const lngDelta = radius / (111 * Math.cos(latitude * Math.PI/180));
-    const minLat = latitude - latDelta; const maxLat = latitude + latDelta;
-    const minLng = longitude - lngDelta; const maxLng = longitude + lngDelta;
-    const pulses = await prisma.pulse.findMany({
-      where: {
-        isPublic: true,
-        // Filter by related Location fields (only pulses that have a location within bbox)
-        location: {
-          is: {
-            latitude: { gte: minLat, lte: maxLat },
-            longitude: { gte: minLng, lte: maxLng },
-          }
-        }
-      },
-      include: {
-        author: { select: { id: true, displayName: true, email: true, locationLabel: true, profileImageUrl: true } },
-        participants: { select: { id: true, displayName: true, email: true, profileImageUrl: true } },
-        location: true
-      },
-      take: 400
-    });
-    const within = pulses.map(p => {
-      if (!p.location) return null;
-      const d = haversineKm(p.location.latitude, p.location.longitude, latitude, longitude);
-      (p as any).distanceKm = d;
-      return d <= radius ? p : null;
-    }).filter(Boolean).sort((a: any,b: any)=>a.distanceKm-b.distanceKm).slice(0,300);
-    res.json({ center: { latitude, longitude }, radiusKm: radius, count: within.length, pulses: within });
-  } catch (e) {
-    console.error('nearby pulses error', e);
-    res.status(500).json({ error: 'Failed nearby pulses search' });
-  }
-});
+// (Duplicate nearby route removed; definition moved earlier before parameter route)
 
 // New route to update a pulse (authentication required)
 app.put('/api/pulses/:id', authenticateUser, async (req, res) => {

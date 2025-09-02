@@ -10,3 +10,4 @@ export '/pages/messaging/enhanced_messaging_page.dart'
     show EnhancedMessagingPage;
 export '/pages/messaging/messages_hub_widget.dart' show MessagesHubWidget;
 export '/pages/pulse_detail/pulse_detail_page.dart' show PulseDetailPage;
+export '/pages/map/dual_layer_map_page.dart' show DualLayerMapPage;

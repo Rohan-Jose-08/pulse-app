@@ -58,23 +58,24 @@ router.get('/nearby', async (req: Request, res: Response) => {
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
       return res.status(401).json({ error: 'Unauthorized' });
     }
-    const token = authHeader.split('Bearer ')[1];
-    const decodedToken = await getAuth().verifyIdToken(token);
-    const firebaseUid = decodedToken.uid;
-    const user = await prisma.user.findUnique({ where: { firebaseUid } });
-    if (!user) return res.status(404).json({ error: 'User not found' });
-
+    console.log('[GET] /pulses/nearby', req.query);
     const { lat, lng, radiusKm = '10' } = req.query as { lat?: string; lng?: string; radiusKm?: string };
-    if (!lat || !lng) return res.status(400).json({ error: 'lat and lng are required' });
+    if (!lat || !lng) {
+      console.log('Missing lat/lng');
+      return res.status(400).json({ error: 'lat and lng are required' });
+    }
     const latitude = parseFloat(lat); const longitude = parseFloat(lng); const radius = parseFloat(radiusKm as string);
-    if ([latitude, longitude, radius].some(v => isNaN(v))) return res.status(400).json({ error: 'Invalid numeric parameters' });
+    if ([latitude, longitude, radius].some(v => isNaN(v))) {
+      console.log('Invalid numeric parameters', { latitude, longitude, radius });
+      return res.status(400).json({ error: 'Invalid numeric parameters' });
+    }
 
     const bbox = boundingBox(latitude, longitude, radius);
-    // Bounding box search via related Location
+    // Bounding box search via related Location, only public pulses
     const rough = await prisma.pulse.findMany({
       where: {
         location: { latitude: { gte: bbox.minLat, lte: bbox.maxLat }, longitude: { gte: bbox.minLng, lte: bbox.maxLng } },
-        // Optionally only public or active window; include user's own for now
+        isPublic: true,
       },
       include: {
         author: { select: { id: true, displayName: true, email: true } },
@@ -91,7 +92,9 @@ router.get('/nearby', async (req: Request, res: Response) => {
     }).filter(Boolean) as any[];
 
     precise.sort((a,b)=>a.distanceKm - b.distanceKm);
-    res.json({ center: { latitude, longitude }, radiusKm: radius, count: precise.length, pulses: precise.slice(0,500) });
+    const response = { center: { latitude, longitude }, radiusKm: radius, count: precise.length, pulses: precise.slice(0,500) };
+    console.log('Nearby pulses response:', JSON.stringify(response));
+    return res.status(200).json(response);
   } catch (e) {
     console.error('nearby pulses error', e);
     res.status(500).json({ error: 'Failed nearby pulses search' });

@@ -1,5 +1,6 @@
 import '/flutter_flow/flutter_flow_theme.dart';
 import 'package:flutter/material.dart';
+import 'package:geolocator/geolocator.dart';
 import '/components/navbar_widget.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../auth/firebase_auth/auth_util.dart';
@@ -25,20 +26,67 @@ final _conversationsProvider = StreamProvider.autoDispose
   final controller = StreamController<List<Map<String, dynamic>>>();
   List<Map<String, dynamic>> items = [];
 
-  (() async {
-    final list = await ApiService.instance.listConversations();
-    items = (list ?? []).toList();
-    controller.add(items);
-  })();
+  List<Map<String, dynamic>> _normalize(List<Map<String, dynamic>> raw) {
+    // Ensure consistent sorting (most recent updatedAt desc)
+    raw.sort((a, b) {
+      final ta = DateTime.tryParse(a['updatedAt']?.toString() ?? '') ??
+          DateTime.fromMillisecondsSinceEpoch(0);
+      final tb = DateTime.tryParse(b['updatedAt']?.toString() ?? '') ??
+          DateTime.fromMillisecondsSinceEpoch(0);
+      return tb.compareTo(ta);
+    });
+    return raw;
+  }
 
-  final sub = SocketService.instance.conversationUpdates.listen((_) async {
-    final list = await ApiService.instance.listConversations();
-    items = (list ?? []).toList();
-    controller.add(items);
+  Future<void> _load({bool silent = false}) async {
+    try {
+      final list = await ApiService.instance.listConversations();
+      final convs = (list ?? [])
+          .whereType<Map<String, dynamic>>()
+          .map((c) => Map<String, dynamic>.from(c))
+          .toList();
+      items = _normalize(convs);
+      controller.add(items);
+    } catch (e) {
+      if (!silent) {
+        // ignore: avoid_print
+        print('Conversations load error: $e');
+      }
+    }
+  }
+
+  _load();
+  final sub = SocketService.instance.conversationUpdates
+      .listen((_) => _load(silent: true));
+  final subMsg = SocketService.instance.messages.listen((msg) {
+    try {
+      final cid = msg['conversationId']?.toString();
+      if (cid == null) return;
+      final idx = items.indexWhere((c) => c['id']?.toString() == cid);
+      if (idx != -1) {
+        items[idx]['lastMessageText'] =
+            msg['text']?.toString() ?? items[idx]['lastMessageText'];
+        items[idx]['updatedAt'] =
+            msg['createdAt']?.toString() ?? DateTime.now().toIso8601String();
+        // Re-sort
+        items = List<Map<String, dynamic>>.from(items);
+        items.sort((a, b) {
+          final ta = DateTime.tryParse(a['updatedAt']?.toString() ?? '') ??
+              DateTime.fromMillisecondsSinceEpoch(0);
+          final tb = DateTime.tryParse(b['updatedAt']?.toString() ?? '') ??
+              DateTime.fromMillisecondsSinceEpoch(0);
+          return tb.compareTo(ta);
+        });
+        controller.add(items);
+      } else {
+        _load(silent: true); // new conversation
+      }
+    } catch (_) {}
   });
 
   ref.onDispose(() {
     sub.cancel();
+    subMsg.cancel();
     controller.close();
   });
 
@@ -208,16 +256,72 @@ class _MessagesHubWidgetState extends State<MessagesHubWidget> {
 
   Widget _buildDirectChatTile(BuildContext context, Map<String, dynamic> data,
       FlutterFlowTheme theme, String uid) {
-    final List<dynamic> participants =
-        (data['participants'] as List<dynamic>? ?? []);
-    final other = participants
-        .whereType<Map<String, dynamic>>()
-        .firstWhere((p) => p['id'] != uid, orElse: () => <String, dynamic>{});
-    final otherId = other['id']?.toString() ?? '';
-    final otherName = other['displayName']?.toString() ?? otherId;
-    final otherPhoto = other['profileImageUrl']?.toString() ?? '';
-    final lastMessage = (data['lastMessageText'] as String?) ?? '';
-    final updatedAt = DateTime.tryParse(data['updatedAt']?.toString() ?? '');
+    // Participants may be under participants/members/users
+    List<dynamic> participants = (data['participants'] as List?) ?? [];
+    if (participants.isEmpty) participants = (data['members'] as List?) ?? [];
+    if (participants.isEmpty) participants = (data['users'] as List?) ?? [];
+
+    Map<String, dynamic> _normalizeUser(dynamic u) {
+      if (u is Map<String, dynamic>) return u;
+      return <String, dynamic>{};
+    }
+
+    String _userId(Map<String, dynamic> u) =>
+        (u['id'] ?? u['userId'] ?? u['uid'] ?? '').toString();
+    String _userPhoto(Map<String, dynamic> u) => (u['profileImageUrl'] ??
+            u['photoUrl'] ??
+            u['avatar'] ??
+            u['imageUrl'] ??
+            '')
+        .toString();
+    String _userName(Map<String, dynamic> u) {
+      final first = (u['firstName'] ?? u['first_name'])?.toString();
+      final last = (u['lastName'] ?? u['last_name'])?.toString();
+      final combined =
+          [first, last].where((e) => e != null && e.isNotEmpty).join(' ');
+      return (u['displayName'] ??
+              u['fullName'] ??
+              u['username'] ??
+              u['name'] ??
+              combined)
+          .toString();
+    }
+
+    final normalized =
+        participants.map(_normalizeUser).where((m) => m.isNotEmpty).toList();
+    Map<String, dynamic> other = <String, dynamic>{};
+    for (final p in normalized) {
+      if (_userId(p) != uid) {
+        other = p;
+        break;
+      }
+    }
+    final otherId = _userId(other);
+    final convoTitleFallback =
+        (data['title'] ?? data['name'] ?? data['displayName'] ?? '').toString();
+    final otherNameRaw = _userName(other);
+    final otherName = otherNameRaw.isNotEmpty
+        ? otherNameRaw
+        : (convoTitleFallback.isNotEmpty ? convoTitleFallback : 'Unknown');
+    final otherPhoto = _userPhoto(other).isNotEmpty
+        ? _userPhoto(other)
+        : (data['avatar'] ?? data['photoUrl'] ?? data['imageUrl'] ?? '')
+            .toString();
+
+    // last message fallback keys
+    String lastMessage = (data['lastMessageText'] ??
+                data['lastMessage'] ??
+                data['last_message'] ??
+                '')
+            ?.toString() ??
+        '';
+    // message object maybe nested
+    if (lastMessage.isEmpty && data['lastMessageObj'] is Map) {
+      lastMessage = (data['lastMessageObj']['text'] ?? '').toString();
+    }
+    final updatedAt = DateTime.tryParse(data['updatedAt']?.toString() ?? '') ??
+        DateTime.tryParse(data['lastActivityAt']?.toString() ?? '') ??
+        DateTime.fromMillisecondsSinceEpoch(0);
 
     return ListTile(
       contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
@@ -227,7 +331,7 @@ class _MessagesHubWidgetState extends State<MessagesHubWidget> {
         child: otherPhoto.isEmpty ? const Icon(Icons.person) : null,
       ),
       title: Text(
-        otherName.isEmpty ? 'Unknown' : otherName,
+        otherName,
         style: theme.titleMedium,
         maxLines: 1,
         overflow: TextOverflow.ellipsis,
@@ -237,12 +341,10 @@ class _MessagesHubWidgetState extends State<MessagesHubWidget> {
         maxLines: 1,
         overflow: TextOverflow.ellipsis,
       ),
-      trailing: updatedAt != null
-          ? Text(
-              dateTimeFormat('relative', updatedAt),
-              style: theme.bodySmall.override(color: theme.secondaryText),
-            )
-          : null,
+      trailing: Text(
+        dateTimeFormat('relative', updatedAt),
+        style: theme.bodySmall.override(color: theme.secondaryText),
+      ),
       onTap: () {
         Navigator.of(context).push(MaterialPageRoute(
             builder: (_) => EnhancedMessagingPage(
@@ -289,34 +391,79 @@ class _MessagesHubWidgetState extends State<MessagesHubWidget> {
                   data: (directChats) {
                     return asyncPulseConvos.when(
                       data: (pulseChats) {
-                        // Filter direct chats to exclude pulse group chats
+                        // Filter direct chats with robust classification
                         final pulseIds = pulseChats
                             .map((c) => c['id']?.toString())
                             .whereType<String>()
                             .toSet();
-                        final filteredDirectChats = directChats.where((conv) {
-                          final isGroup = conv['isGroup'] == true;
-                          final id = conv['id']?.toString();
-                          if (id != null && pulseIds.contains(id)) {
-                            return false; // already classified as pulse group
-                          }
-                          if (!isGroup) return true; // direct 1:1
-                          // For safety: treat any group lacking explicit pulse markers as direct group (future multi-person DMs?) only if <=2 participants
-                          final participants =
-                              (conv['participants'] as List?) ?? [];
-                          final pulseKeyPresent = [
-                            'pulseId',
-                            'pulse_id',
-                            'pulseID',
-                            'pulse',
-                            'pulseUuid'
-                          ].any((k) => conv[k] != null);
-                          if (pulseKeyPresent) return false;
-                          return participants.length <=
-                              2; // else assume pulse group
-                        }).toList();
 
-                        if (filteredDirectChats.isEmpty && pulseChats.isEmpty) {
+                        bool hasPulseMarker(Map<String, dynamic> conv) => [
+                              'pulseId',
+                              'pulse_id',
+                              'pulseID',
+                              'pulse',
+                              'pulseUuid'
+                            ].any((k) =>
+                                conv[k] != null &&
+                                conv[k].toString().isNotEmpty);
+
+                        List<dynamic> _parts(Map<String, dynamic> c) =>
+                            (c['participants'] as List?) ??
+                            (c['members'] as List?) ??
+                            (c['users'] as List?) ??
+                            const [];
+
+                        bool isLikelyDirect(Map<String, dynamic> conv) {
+                          final id = conv['id']?.toString();
+                          if (id != null && pulseIds.contains(id)) return false;
+                          if (hasPulseMarker(conv)) return false;
+                          final typeField =
+                              (conv['type'] ?? conv['conversationType'])
+                                  ?.toString()
+                                  .toLowerCase();
+                          if (typeField == 'direct' ||
+                              typeField == 'dm' ||
+                              typeField == 'private') return true;
+                          final parts = _parts(conv);
+                          if (parts.length == 2) return true;
+                          if (parts.length == 1 && conv['isGroup'] != true)
+                            return true;
+                          // Some backends supply participants only after join; allow missing participants when explicit flag set
+                          if ((parts.isEmpty) && conv['isGroup'] == false)
+                            return true;
+                          return false;
+                        }
+
+                        final filteredDirectChats =
+                            directChats.where(isLikelyDirect).toList();
+                        List<Map<String, dynamic>> fallbackTwoParticipant = [];
+                        if (filteredDirectChats.isEmpty) {
+                          fallbackTwoParticipant = directChats
+                              .where((c) {
+                                final parts = _parts(c);
+                                return parts.length ==
+                                    2; // treat as direct fallback
+                              })
+                              .map((e) => Map<String, dynamic>.from(e))
+                              .toList();
+                        }
+                        final displayDirectChats =
+                            filteredDirectChats.isNotEmpty
+                                ? filteredDirectChats
+                                : fallbackTwoParticipant;
+
+                        if (displayDirectChats.isEmpty &&
+                            directChats.isNotEmpty) {
+                          // Diagnostic log
+                          // ignore: avoid_print
+                          print(
+                              '[DM-DIAG] No direct chats classified (even after fallback). First 2 convos:');
+                          for (final c in directChats.take(2)) {
+                            print('[DM-DIAG] ' + c.toString());
+                          }
+                        }
+
+                        if (displayDirectChats.isEmpty && pulseChats.isEmpty) {
                           return Center(
                             child: Text(
                               'No conversations yet',
@@ -354,12 +501,12 @@ class _MessagesHubWidgetState extends State<MessagesHubWidget> {
                               ...pulseChats.map((data) =>
                                   _buildPulseGroupChatTile(
                                       context, data, theme, uid)),
-                              if (filteredDirectChats.isNotEmpty)
+                              if (displayDirectChats.isNotEmpty)
                                 Divider(height: 24, color: theme.alternate),
                             ],
 
                             // Direct Messages Section
-                            if (filteredDirectChats.isNotEmpty) ...[
+                            if (displayDirectChats.isNotEmpty) ...[
                               Container(
                                 padding:
                                     const EdgeInsets.fromLTRB(16, 16, 16, 8),
@@ -381,7 +528,7 @@ class _MessagesHubWidgetState extends State<MessagesHubWidget> {
                                   ],
                                 ),
                               ),
-                              ...filteredDirectChats.map((data) =>
+                              ...displayDirectChats.map((data) =>
                                   _buildDirectChatTile(
                                       context, data, theme, uid)),
                             ],
@@ -414,23 +561,41 @@ class _MessagesHubWidgetState extends State<MessagesHubWidget> {
       ),
       floatingActionButton: uid.isEmpty
           ? null
-          : FloatingActionButton.extended(
-              onPressed: () async {
-                await showModalBottomSheet(
-                  context: context,
-                  isScrollControlled: true,
-                  useSafeArea: true,
-                  backgroundColor:
-                      FlutterFlowTheme.of(context).secondaryBackground,
-                  shape: const RoundedRectangleBorder(
-                    borderRadius:
-                        BorderRadius.vertical(top: Radius.circular(16)),
-                  ),
-                  builder: (ctx) => const _NewMessageSheet(),
-                );
-              },
-              icon: const Icon(Icons.chat_bubble_outline_rounded),
-              label: const Text('New message'),
+          : Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                FloatingActionButton.extended(
+                  heroTag: 'nearbyUsersFab',
+                  onPressed: () async {
+                    await showDialog(
+                      context: context,
+                      builder: (ctx) => const _NearbyUsersDialog(),
+                    );
+                  },
+                  icon: const Icon(Icons.radar_rounded),
+                  label: const Text('Find nearby'),
+                ),
+                const SizedBox(height: 12),
+                FloatingActionButton.extended(
+                  heroTag: 'newMessageFab',
+                  onPressed: () async {
+                    await showModalBottomSheet(
+                      context: context,
+                      isScrollControlled: true,
+                      useSafeArea: true,
+                      backgroundColor:
+                          FlutterFlowTheme.of(context).secondaryBackground,
+                      shape: const RoundedRectangleBorder(
+                        borderRadius:
+                            BorderRadius.vertical(top: Radius.circular(16)),
+                      ),
+                      builder: (ctx) => const _NewMessageSheet(),
+                    );
+                  },
+                  icon: const Icon(Icons.chat_bubble_outline_rounded),
+                  label: const Text('New message'),
+                ),
+              ],
             ),
       bottomNavigationBar: const NavbarWidget(),
     );
@@ -742,6 +907,241 @@ class _UserTile extends StatelessWidget {
           : null,
       trailing: Icon(Icons.chevron_right_rounded, color: theme.secondaryText),
       onTap: onTap,
+    );
+  }
+}
+
+/// Dialog that fetches and displays nearby users allowing quick messaging.
+class _NearbyUsersDialog extends StatefulWidget {
+  const _NearbyUsersDialog();
+
+  @override
+  State<_NearbyUsersDialog> createState() => _NearbyUsersDialogState();
+}
+
+class _NearbyUsersDialogState extends State<_NearbyUsersDialog> {
+  bool _loading = true;
+  bool _error = false;
+  List<Map<String, dynamic>> _users = [];
+  double _radiusKm = 5;
+  bool _refreshing = false;
+  Position? _lastPosition;
+  String? _errorMessage;
+
+  @override
+  void initState() {
+    super.initState();
+    _fetch();
+  }
+
+  Future<void> _fetch() async {
+    setState(() {
+      _loading = true;
+      _error = false;
+      _errorMessage = null;
+    });
+    try {
+      final serviceEnabled = await Geolocator.isLocationServiceEnabled();
+      if (!serviceEnabled) {
+        setState(() {
+          _error = true;
+          _errorMessage = 'Location services are disabled.';
+        });
+        return;
+      }
+      LocationPermission permission = await Geolocator.checkPermission();
+      if (permission == LocationPermission.denied) {
+        permission = await Geolocator.requestPermission();
+      }
+      if (permission == LocationPermission.deniedForever ||
+          permission == LocationPermission.denied) {
+        setState(() {
+          _error = true;
+          _errorMessage = 'Location permission denied. Enable it in settings.';
+        });
+        return;
+      }
+      final pos = await Geolocator.getCurrentPosition(
+          desiredAccuracy: LocationAccuracy.high);
+      _lastPosition = pos;
+      final res = await ApiService.instance.getNearbyUsers(
+          latitude: pos.latitude,
+          longitude: pos.longitude,
+          radiusKm: _radiusKm);
+      setState(() {
+        _users = (res ?? [])
+            .where((u) => (u['id']?.toString() ?? '') != currentUserUid)
+            .toList();
+      });
+    } catch (e) {
+      setState(() {
+        _error = true;
+        _errorMessage = 'Failed to get GPS location.';
+      });
+    } finally {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  Future<void> _startConversation(Map<String, dynamic> user) async {
+    final otherId = user['id']?.toString() ?? '';
+    if (otherId.isEmpty) return;
+    if (otherId == currentUserUid) return;
+    final convo =
+        await ApiService.instance.getOrCreateConversationWith(otherId);
+    if (convo == null) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Unable to start conversation')));
+      return;
+    }
+
+    if (!mounted) return;
+    Navigator.of(context).pop();
+    final participants = (convo['participants'] as List<dynamic>? ?? [])
+        .whereType<Map<String, dynamic>>()
+        .toList();
+    final other = participants.firstWhere(
+      (p) => p['id'] != currentUserUid,
+      orElse: () => user,
+    );
+    Navigator.of(context).push(MaterialPageRoute(
+      builder: (_) => EnhancedMessagingPage(
+        chatId: convo['id']?.toString() ?? '',
+        recipientUserId: other['id']?.toString() ?? otherId,
+        recipientName: (other['displayName']?.toString() ?? '').isNotEmpty
+            ? other['displayName'] as String
+            : other['id']?.toString() ?? 'User',
+        recipientPhotoUrl: other['profileImageUrl']?.toString() ?? '',
+      ),
+    ));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = FlutterFlowTheme.of(context);
+    return AlertDialog(
+      backgroundColor: theme.secondaryBackground,
+      title: Row(
+        children: [
+          const Icon(Icons.radar_rounded),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Row(
+              children: [
+                const Expanded(child: Text('Nearby users (GPS)')),
+                if (_lastPosition != null)
+                  Icon(Icons.gps_fixed, size: 16, color: theme.primary),
+              ],
+            ),
+          ),
+          DropdownButton<double>(
+            value: _radiusKm,
+            underline: const SizedBox.shrink(),
+            items: const [5, 10, 20]
+                .map((r) => DropdownMenuItem<double>(
+                      value: r.toDouble(),
+                      child: Text('${r}km'),
+                    ))
+                .toList(),
+            onChanged: (v) async {
+              if (v == null) return;
+              setState(() {
+                _radiusKm = v;
+                _refreshing = true;
+              });
+              await _fetch();
+              if (mounted) setState(() => _refreshing = false);
+            },
+          )
+        ],
+      ),
+      content: SizedBox(
+        width: double.maxFinite,
+        child: _loading
+            ? const Center(
+                child: Padding(
+                padding: EdgeInsets.all(24.0),
+                child: CircularProgressIndicator(),
+              ))
+            : _error
+                ? Padding(
+                    padding: const EdgeInsets.all(8.0),
+                    child: Text(
+                      _errorMessage ?? 'Unable to fetch nearby users.',
+                      style:
+                          theme.bodyMedium.override(color: theme.secondaryText),
+                    ),
+                  )
+                : _users.isEmpty
+                    ? Padding(
+                        padding: const EdgeInsets.all(8.0),
+                        child: Text(
+                          'No users found within $_radiusKm km.',
+                          style: theme.bodyMedium
+                              .override(color: theme.secondaryText),
+                        ),
+                      )
+                    : ListView.separated(
+                        shrinkWrap: true,
+                        itemBuilder: (_, i) {
+                          final u = _users[i];
+                          final name =
+                              (u['displayName']?.toString() ?? '').isNotEmpty
+                                  ? u['displayName'].toString()
+                                  : (u['email']?.toString() ??
+                                      u['id']?.toString() ??
+                                      'User');
+                          final photo = u['profileImageUrl']?.toString() ?? '';
+                          final distanceKm =
+                              (u['distanceKm'] as num?)?.toDouble();
+                          return ListTile(
+                            leading: CircleAvatar(
+                              backgroundImage:
+                                  photo.isNotEmpty ? NetworkImage(photo) : null,
+                              child: photo.isEmpty
+                                  ? const Icon(Icons.person)
+                                  : null,
+                            ),
+                            title: Text(name,
+                                style: theme.titleMedium,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis),
+                            subtitle: distanceKm != null
+                                ? Text(
+                                    '${distanceKm.toStringAsFixed(1)} km away')
+                                : null,
+                            trailing: IconButton(
+                              icon: const Icon(Icons.chat_rounded),
+                              onPressed: () => _startConversation(u),
+                            ),
+                            onTap: () => _startConversation(u),
+                          );
+                        },
+                        separatorBuilder: (_, __) =>
+                            Divider(height: 1, color: theme.alternate),
+                        itemCount: _users.length,
+                      ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: _refreshing
+              ? null
+              : () async {
+                  await _fetch();
+                },
+          child: _refreshing
+              ? const SizedBox(
+                  height: 16,
+                  width: 16,
+                  child: CircularProgressIndicator(strokeWidth: 2))
+              : const Text('Refresh'),
+        ),
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Close'),
+        ),
+      ],
     );
   }
 }

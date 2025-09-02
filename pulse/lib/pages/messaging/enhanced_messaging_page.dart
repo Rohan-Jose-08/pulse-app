@@ -9,8 +9,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:image_picker/image_picker.dart';
 import '../../auth/firebase_auth/auth_util.dart';
 import '../../flutter_flow/flutter_flow_theme.dart';
-import '../../backend/api_service.dart';
-import '../../backend/socket_service.dart';
+// Removed direct ApiService import (handled inside transport manager)
+import '../../backend/chat_transport.dart';
 
 // ================= Models =================
 class EnhancedMessage {
@@ -123,31 +123,47 @@ class LocationData {
 }
 
 // ================= Providers =================
+/// Current transport mode provider.
+final chatTransportModeProvider =
+    StateProvider<ChatTransportMode>((_) => ChatTransportMode.network);
+
 final _enhancedMessagesStreamProvider = StreamProvider.autoDispose
     .family<List<EnhancedMessage>, String>((ref, cid) {
+  final mode = ref.watch(chatTransportModeProvider);
   final controller = StreamController<List<EnhancedMessage>>();
   final byId = <String, EnhancedMessage>{};
-  void publish() {
+  bool initialized = false;
+
+  void _publish() {
     final list = byId.values.toList()
       ..sort((a, b) => a.timestamp.compareTo(b.timestamp));
     controller.add(list);
   }
 
-  final sub = SocketService.instance.messages.listen((data) {
+  Future<void> hydrate() async {
+    if (initialized)
+      return; // avoid duplicate initial loads when mode changes fast
+    initialized = true;
+    final raw = await ChatTransportManager.instance.initialMessages(cid);
+    for (final r in raw) {
+      final m = EnhancedMessage.fromSocket(r);
+      byId[m.id] = m;
+    }
+    _publish();
+  }
+
+  // Listen to active transport's streams scoped by conversation id.
+  final transport = ChatTransportManager.instance.transportFor(mode);
+  final sub = transport.messages.listen((data) {
     if (data['conversationId'] == cid) {
       final m = EnhancedMessage.fromSocket(Map<String, dynamic>.from(data));
       byId[m.id] = m;
-      publish();
+      _publish();
     }
   });
-  () async {
-    final res = await ApiService.instance.listMessages(cid);
-    final msgs = (res?['messages'] as List<dynamic>? ?? [])
-        .map((m) => EnhancedMessage.fromSocket(Map<String, dynamic>.from(m)))
-        .toList();
-    for (final m in msgs) byId[m.id] = m;
-    publish();
-  }();
+
+  hydrate();
+
   ref.onDispose(() {
     sub.cancel();
     controller.close();
@@ -157,7 +173,9 @@ final _enhancedMessagesStreamProvider = StreamProvider.autoDispose
 
 final _typingStreamProvider = StreamProvider.autoDispose
     .family<Map<String, dynamic>, String>((ref, chatId) {
-  return SocketService.instance.typing.map((data) {
+  final mode = ref.watch(chatTransportModeProvider);
+  final transport = ChatTransportManager.instance.transportFor(mode);
+  return transport.typing.map((data) {
     try {
       final m = Map<String, dynamic>.from(data);
       if (m['conversationId']?.toString() == chatId &&
@@ -283,8 +301,9 @@ class _EnhancedMessagingPageState extends ConsumerState<EnhancedMessagingPage>
     _scroll.addListener(_handleScroll);
     _badgeCtl = AnimationController(vsync: this, duration: 250.ms);
     _badgeAnim = CurvedAnimation(parent: _badgeCtl, curve: Curves.easeOut);
-    SocketService.instance.connect();
-    SocketService.instance.joinConversation(widget.chatId);
+    // Ensure active transport connected & joined
+    ChatTransportManager.instance.ensureConnected();
+    ChatTransportManager.instance.active.joinConversation(widget.chatId);
   }
 
   @override
@@ -296,7 +315,7 @@ class _EnhancedMessagingPageState extends ConsumerState<EnhancedMessagingPage>
     _scroll.dispose();
     _badgeCtl.dispose();
     _setTyping(false);
-    SocketService.instance.leaveConversation(widget.chatId);
+    ChatTransportManager.instance.active.leaveConversation(widget.chatId);
     super.dispose();
   }
 
@@ -324,7 +343,7 @@ class _EnhancedMessagingPageState extends ConsumerState<EnhancedMessagingPage>
 
   Future<void> _setTyping(bool v) async {
     if (currentUserUid.isEmpty) return;
-    SocketService.instance.setTyping(widget.chatId, v);
+    ChatTransportManager.instance.active.setTyping(widget.chatId, v);
   }
 
   Future<void> _sendText() async {
@@ -333,10 +352,8 @@ class _EnhancedMessagingPageState extends ConsumerState<EnhancedMessagingPage>
     setState(() => _isSending = true);
     try {
       HapticFeedback.lightImpact();
-      SocketService.instance.sendMessage(
-        conversationId: widget.chatId,
-        text: txt,
-      );
+      ChatTransportManager.instance.active
+          .sendMessage(conversationId: widget.chatId, text: txt);
       _text.clear();
       _clearReply();
       await _scrollToBottom();
@@ -354,11 +371,8 @@ class _EnhancedMessagingPageState extends ConsumerState<EnhancedMessagingPage>
   Future<void> _sendMedia(String? img, String? vid) async {
     try {
       HapticFeedback.lightImpact();
-      SocketService.instance.sendMessage(
-        conversationId: widget.chatId,
-        imageUrl: img,
-        videoUrl: vid,
-      );
+      ChatTransportManager.instance.active.sendMessage(
+          conversationId: widget.chatId, imageUrl: img, videoUrl: vid);
       _clearReply();
       await _scrollToBottom();
     } catch (_) {
@@ -372,10 +386,8 @@ class _EnhancedMessagingPageState extends ConsumerState<EnhancedMessagingPage>
 
   Future<void> _sendLocation() async {
     try {
-      SocketService.instance.sendMessage(
-        conversationId: widget.chatId,
-        text: '📍 Location shared',
-      );
+      ChatTransportManager.instance.active.sendMessage(
+          conversationId: widget.chatId, text: '📍 Location shared');
       _clearReply();
       await _scrollToBottom();
     } catch (_) {
@@ -409,11 +421,8 @@ class _EnhancedMessagingPageState extends ConsumerState<EnhancedMessagingPage>
   Future<void> _addReaction(String id, String emoji) async {
     try {
       HapticFeedback.selectionClick();
-      SocketService.instance.addReaction(
-        conversationId: widget.chatId,
-        messageId: id,
-        emoji: emoji,
-      );
+      ChatTransportManager.instance.active.addReaction(
+          conversationId: widget.chatId, messageId: id, emoji: emoji);
     } catch (_) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -563,6 +572,7 @@ class _EnhancedMessagingPageState extends ConsumerState<EnhancedMessagingPage>
         )
       ]),
       actions: [
+        _transportToggle(t),
         IconButton(
           icon: Icon(Icons.videocam_outlined, color: t.primaryText),
           onPressed: () => ScaffoldMessenger.of(context).showSnackBar(
@@ -575,6 +585,77 @@ class _EnhancedMessagingPageState extends ConsumerState<EnhancedMessagingPage>
         ),
       ],
     );
+  }
+
+  Widget _transportToggle(FlutterFlowTheme t) {
+    final mode = ref.watch(chatTransportModeProvider);
+    final isBt = mode == ChatTransportMode.bluetooth;
+    return IconButton(
+      tooltip: isBt ? 'Bluetooth mesh (experimental)' : 'Network transport',
+      icon: Icon(isBt ? Icons.bluetooth_rounded : Icons.wifi_rounded,
+          color: isBt ? t.primary : t.primaryText),
+      onPressed: () => _showTransportPicker(mode),
+    );
+  }
+
+  Future<void> _showTransportPicker(ChatTransportMode current) async {
+    final t = FlutterFlowTheme.of(context);
+    await showModalBottomSheet(
+        context: context,
+        backgroundColor: t.secondaryBackground,
+        shape: const RoundedRectangleBorder(
+            borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+        builder: (_) {
+          return SafeArea(
+              child: Column(mainAxisSize: MainAxisSize.min, children: [
+            const SizedBox(height: 12),
+            Container(
+                width: 40,
+                height: 4,
+                decoration: BoxDecoration(
+                    color: t.secondaryText.withOpacity(.3),
+                    borderRadius: BorderRadius.circular(2))),
+            ListTile(
+              leading: const Icon(Icons.wifi_rounded),
+              title: const Text('Network (Wi‑Fi / Mobile Data)'),
+              subtitle: const Text('Real-time via backend server'),
+              trailing: current == ChatTransportMode.network
+                  ? Icon(Icons.check, color: t.primary)
+                  : null,
+              onTap: () {
+                Navigator.pop(context);
+                ref.read(chatTransportModeProvider.notifier).state =
+                    ChatTransportMode.network;
+                // Ensure conversation joined on new transport
+                Future.microtask(() => ChatTransportManager.instance.active
+                    .joinConversation(widget.chatId));
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.bluetooth_rounded),
+              title: const Text('Bluetooth Mesh (Experimental)'),
+              subtitle: const Text('Offline, nearby only – prototype'),
+              trailing: current == ChatTransportMode.bluetooth
+                  ? Icon(Icons.check, color: t.primary)
+                  : null,
+              onTap: () {
+                Navigator.pop(context);
+                ref.read(chatTransportModeProvider.notifier).state =
+                    ChatTransportMode.bluetooth;
+                Future.microtask(() => ChatTransportManager.instance.active
+                    .joinConversation(widget.chatId));
+              },
+            ),
+            const SizedBox(height: 4),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+              child: Text(
+                'Bluetooth mode is a local prototype – messages are kept locally and broadcast simulation only.',
+                style: t.bodySmall.override(color: t.secondaryText),
+              ),
+            )
+          ]));
+        });
   }
 
   String _subtitle(Map<String, dynamic> typing, Set<String> online) {
@@ -920,9 +1001,19 @@ class _EnhancedMessagingPageState extends ConsumerState<EnhancedMessagingPage>
         valueListenable: _text,
         builder: (_, v, __) {
           final canSend = v.text.trim().isNotEmpty && !_isSending;
+          final mode = ref.watch(chatTransportModeProvider);
           return Column(
             mainAxisSize: MainAxisSize.min,
             children: [
+              if (mode == ChatTransportMode.bluetooth)
+                Container(
+                  width: double.infinity,
+                  color: Colors.blue.withOpacity(.1),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+                  child: Text('Bluetooth mesh prototype – messages stay local',
+                      style: t.bodySmall.override(color: t.primary)),
+                ),
               Container(
                 padding: const EdgeInsets.all(16),
                 decoration:

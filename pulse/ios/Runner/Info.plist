@@ -80,5 +80,10 @@
 
 <key>NSLocationWhenInUseUsageDescription</key>
 <string>This app needs your location to get your current address.</string>
+	<!-- Bluetooth permissions for nearby offline messaging -->
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>Bluetooth access is used to discover nearby devices and exchange messages when you are offline.</string>
+	<key>NSBluetoothPeripheralUsageDescription</key>
+	<string>Bluetooth is used to advertise your device so nearby users can receive your messages without internet.</string>
 </dict>
 </plist>
