@@ -11,6 +11,11 @@ import '../../auth/firebase_auth/auth_util.dart';
 import '../../flutter_flow/flutter_flow_theme.dart';
 // Removed direct ApiService import (handled inside transport manager)
 import '../../backend/chat_transport.dart';
+import '../../backend/webrtc_call_service.dart';
+import '../calling/call_screen.dart';
+import '../calling/group_call_screen.dart';
+import 'package:permission_handler/permission_handler.dart';
+import '../../backend/socket_service.dart';
 
 // ================= Models =================
 class EnhancedMessage {
@@ -304,6 +309,44 @@ class _EnhancedMessagingPageState extends ConsumerState<EnhancedMessagingPage>
     // Ensure active transport connected & joined
     ChatTransportManager.instance.ensureConnected();
     ChatTransportManager.instance.active.joinConversation(widget.chatId);
+
+    // Listen for group call start/stop and show a join banner (opt-in)
+    if (widget.isGroupChat) {
+      SocketService.instance.groupCallStarted.listen((m) {
+        if (!mounted) return;
+        if (m['conversationId']?.toString() != widget.chatId) return;
+        final isVideo = m['isVideo'] == true;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            behavior: SnackBarBehavior.floating,
+            content: Text(isVideo
+                ? 'Group video call started'
+                : 'Group voice call started'),
+            action: SnackBarAction(
+              label: 'Join',
+              onPressed: () async {
+                if (isVideo) {
+                  final res = await [Permission.microphone, Permission.camera]
+                      .request();
+                  if (res[Permission.microphone]?.isGranted != true ||
+                      res[Permission.camera]?.isGranted != true) return;
+                } else {
+                  final p = await Permission.microphone.request();
+                  if (!p.isGranted) return;
+                }
+                if (!mounted) return;
+                Navigator.of(context).push(MaterialPageRoute(
+                  builder: (_) => GroupCallScreen(
+                    conversationId: widget.chatId,
+                    isVideo: isVideo,
+                  ),
+                ));
+              },
+            ),
+          ),
+        );
+      });
+    }
   }
 
   @override
@@ -573,16 +616,115 @@ class _EnhancedMessagingPageState extends ConsumerState<EnhancedMessagingPage>
       ]),
       actions: [
         _transportToggle(t),
-        IconButton(
-          icon: Icon(Icons.videocam_outlined, color: t.primaryText),
-          onPressed: () => ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(content: Text('Video calls coming soon'))),
-        ),
-        IconButton(
-          icon: Icon(Icons.call_outlined, color: t.primaryText),
-          onPressed: () => ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(content: Text('Voice calls coming soon'))),
-        ),
+        if (!widget.isGroupChat)
+          IconButton(
+            tooltip: 'Start video call',
+            icon: Icon(Icons.videocam_rounded, color: t.primaryText),
+            onPressed: () async {
+              try {
+                // Request camera & microphone permissions
+                await [Permission.camera, Permission.microphone].request();
+                if (!mounted) return;
+                // Show ringing UI immediately
+                Navigator.of(context, rootNavigator: true).push(
+                  MaterialPageRoute(
+                    builder: (_) => CallScreen(
+                      peerUserId: widget.recipientUserId,
+                      isVideo: true,
+                    ),
+                  ),
+                );
+                // Dial in the background with error feedback
+                Future.microtask(() async {
+                  try {
+                    await WebRTCCallService.instance.callPeer(
+                      toUserId: widget.recipientUserId,
+                      isVideo: true,
+                      conversationId: widget.chatId,
+                    );
+                  } catch (_) {
+                    if (!mounted) return;
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(content: Text('Call failed')),
+                    );
+                    Navigator.of(context).maybePop();
+                  }
+                });
+              } catch (_) {}
+            },
+          ),
+        if (!widget.isGroupChat)
+          IconButton(
+            tooltip: 'Start voice call',
+            icon: Icon(Icons.call_rounded, color: t.primaryText),
+            onPressed: () async {
+              try {
+                await [Permission.microphone].request();
+                if (!mounted) return;
+                // Show ringing UI immediately
+                Navigator.of(context, rootNavigator: true).push(
+                  MaterialPageRoute(
+                    builder: (_) => CallScreen(
+                      peerUserId: widget.recipientUserId,
+                      isVideo: false,
+                    ),
+                  ),
+                );
+                // Dial in the background with error feedback
+                Future.microtask(() async {
+                  try {
+                    await WebRTCCallService.instance.callPeer(
+                      toUserId: widget.recipientUserId,
+                      isVideo: false,
+                      conversationId: widget.chatId,
+                    );
+                  } catch (_) {
+                    if (!mounted) return;
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(content: Text('Call failed')),
+                    );
+                    Navigator.of(context).maybePop();
+                  }
+                });
+              } catch (_) {}
+            },
+          ),
+        if (widget.isGroupChat)
+          PopupMenuButton<String>(
+            tooltip: 'Group call',
+            onSelected: (v) async {
+              if (v == 'voice') {
+                final perm = await Permission.microphone.request();
+                if (!perm.isGranted) return;
+                if (!mounted) return;
+                Navigator.of(context).push(MaterialPageRoute(
+                  builder: (_) => GroupCallScreen(
+                    conversationId: widget.chatId,
+                    isVideo: false,
+                  ),
+                ));
+              } else if (v == 'video') {
+                final res =
+                    await [Permission.microphone, Permission.camera].request();
+                if (res[Permission.microphone]?.isGranted != true ||
+                    res[Permission.camera]?.isGranted != true) return;
+                if (!mounted) return;
+                Navigator.of(context).push(MaterialPageRoute(
+                  builder: (_) => GroupCallScreen(
+                    conversationId: widget.chatId,
+                    isVideo: true,
+                  ),
+                ));
+              }
+            },
+            itemBuilder: (_) => const [
+              PopupMenuItem(
+                  value: 'voice', child: Text('Start group voice call')),
+              PopupMenuItem(
+                  value: 'video', child: Text('Start group video call')),
+            ],
+            icon: Icon(Icons.groups_rounded, color: t.primaryText),
+          ),
       ],
     );
   }

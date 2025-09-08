@@ -150,58 +150,103 @@ class _NavbarWidgetState extends State<NavbarWidget>
   @override
   Widget build(BuildContext context) {
     final theme = FlutterFlowTheme.of(context);
+    final bottomInset = MediaQuery.of(context).padding.bottom;
 
-    return Transform.translate(
-      offset: const Offset(0, -22),
+    return Container(
+      decoration: const BoxDecoration(
+        color: Colors.transparent,
+      ),
       child: Container(
+        width: double.infinity,
+        height: 90.0 + bottomInset,
         decoration: BoxDecoration(
-          color: Colors.transparent,
-        ),
-        child: Container(
-          width: double.infinity,
-          height: 80.0,
-          decoration: BoxDecoration(
-            color: theme.secondaryBackground.withOpacity(0.95),
-            boxShadow: [
-              BoxShadow(
-                blurRadius: 20.0,
-                color: Colors.black.withOpacity(0.1),
-                offset: const Offset(0.0, -5.0),
-                spreadRadius: 0.0,
-              )
-            ],
-            borderRadius: const BorderRadius.only(
-              topLeft: Radius.circular(24.0),
-              topRight: Radius.circular(24.0),
+          color: theme.secondaryBackground.withOpacity(0.95),
+          boxShadow: [
+            BoxShadow(
+              blurRadius: 20.0,
+              color: Colors.black.withOpacity(0.1),
+              offset: const Offset(0.0, -5.0),
+              spreadRadius: 0.0,
             ),
+          ],
+          borderRadius: const BorderRadius.only(
+            topLeft: Radius.circular(24.0),
+            topRight: Radius.circular(24.0),
           ),
-          child: ClipRRect(
-            borderRadius: const BorderRadius.only(
-              topLeft: Radius.circular(24.0),
-              topRight: Radius.circular(24.0),
-            ),
-            child: BackdropFilter(
-              filter: ImageFilter.blur(sigmaX: 10.0, sigmaY: 10.0),
-              child: Padding(
-                padding: const EdgeInsets.symmetric(
-                    horizontal: 20.0, vertical: 12.0),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                  children: [
-                    _buildNavItem(0, Icons.search_rounded, 'Search',
-                        SearchWidget.routePath),
-                    _buildNavItem(1, Icons.public_rounded, 'Map',
-                        DualLayerMapPage.routePath),
-                    _buildNavItem(2, Icons.explore_rounded, 'Explore',
-                        SearchExplorePage.routePath),
-                    _buildNavItem(3, Icons.add_circle_rounded, 'Create',
-                        CreatePulseWidget.routePath),
-                    _buildNavItem(
-                        4, Icons.chat_bubble_rounded, 'Messages', '/messages'),
-                    _buildNavItem(
-                        5, Icons.person_rounded, 'Profile', '/profile'),
-                  ],
-                ),
+        ),
+        child: ClipRRect(
+          borderRadius: const BorderRadius.only(
+            topLeft: Radius.circular(24.0),
+            topRight: Radius.circular(24.0),
+          ),
+          child: BackdropFilter(
+            filter: ImageFilter.blur(sigmaX: 10.0, sigmaY: 10.0),
+            child: Padding(
+              padding: EdgeInsets.fromLTRB(16.0, 8.0, 16.0, 8.0 + bottomInset),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.center,
+                children: [
+                  Expanded(
+                    child: Center(
+                      child: _buildNavItem(
+                        0,
+                        Icons.search_rounded,
+                        'Search',
+                        SearchWidget.routePath,
+                      ),
+                    ),
+                  ),
+                  Expanded(
+                    child: Center(
+                      child: _buildNavItem(
+                        1,
+                        Icons.public_rounded,
+                        'Map',
+                        DualLayerMapPage.routePath,
+                      ),
+                    ),
+                  ),
+                  Expanded(
+                    child: Center(
+                      child: _buildNavItem(
+                        2,
+                        Icons.explore_rounded,
+                        'Explore',
+                        SearchExplorePage.routePath,
+                      ),
+                    ),
+                  ),
+                  Expanded(
+                    child: Center(
+                      child: _buildNavItem(
+                        3,
+                        Icons.add_circle_rounded,
+                        'Create',
+                        CreatePulseWidget.routePath,
+                      ),
+                    ),
+                  ),
+                  Expanded(
+                    child: Center(
+                      child: _buildNavItem(
+                        4,
+                        Icons.chat_bubble_rounded,
+                        'Messages',
+                        '/messages',
+                      ),
+                    ),
+                  ),
+                  Expanded(
+                    child: Center(
+                      child: _buildNavItem(
+                        5,
+                        Icons.person_rounded,
+                        'Profile',
+                        '/profile',
+                      ),
+                    ),
+                  ),
+                ],
               ),
             ),
           ),
@@ -274,7 +319,11 @@ class _NavbarWidgetState extends State<NavbarWidget>
                 fontWeight: isSelected ? FontWeight.w600 : FontWeight.w500,
                 color: isSelected ? Color(0xFF6366F1) : theme.secondaryText,
               ),
-              child: Text(label),
+              child: Text(
+                label,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
             ),
             if (isSelected) ...[
               const SizedBox(height: 2),

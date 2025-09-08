@@ -12,6 +12,10 @@ import '../../auth/firebase_auth/auth_util.dart';
 import '../../flutter_flow/flutter_flow_theme.dart';
 import '../../backend/api_service.dart';
 import '../../backend/socket_service.dart';
+import '../../backend/webrtc_call_service.dart';
+import '../calling/group_call_screen.dart';
+import '../calling/call_screen.dart';
+import 'package:permission_handler/permission_handler.dart';
 
 class Message {
   Message({
@@ -134,6 +138,8 @@ class MessagingPage extends ConsumerStatefulWidget {
 }
 
 class _MessagingPageState extends ConsumerState<MessagingPage> {
+  bool _isDialingVoice = false;
+  bool _isDialingVideo = false;
   final TextEditingController _textController = TextEditingController();
   final FocusNode _inputFocusNode = FocusNode();
   final ScrollController _scrollController = ScrollController();
@@ -382,20 +388,155 @@ class _MessagingPageState extends ConsumerState<MessagingPage> {
               ),
             ],
           ),
-          actions: widget.isGroupChat && widget.pulseId != null
-              ? [
-                  IconButton(
-                    icon: Icon(Icons.info_outline, color: theme.primaryText),
-                    onPressed: () {
-                      // Navigate to pulse details
-                      Navigator.of(context).pushNamed(
-                        '/pulse-detail',
-                        arguments: {'pulseId': widget.pulseId},
+          actions: [
+            if (!widget.isGroupChat) ...[
+              IconButton(
+                icon: Icon(Icons.call_rounded, color: theme.primaryText),
+                tooltip: 'Voice call',
+                onPressed: () async {
+                  if (_isDialingVoice) return;
+                  setState(() => _isDialingVoice = true);
+                  // Request microphone permission
+                  try {
+                    final status = await Permission.microphone.request();
+                    if (!mounted) return;
+                    if (!status.isGranted) {
+                      setState(() => _isDialingVoice = false);
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(
+                            content: Text('Microphone permission is required')),
                       );
-                    },
-                  ),
-                ]
-              : null,
+                      return;
+                    }
+                  } catch (_) {}
+                  if (!mounted) return;
+                  // Navigate to call UI immediately
+                  Navigator.of(context, rootNavigator: true).push(
+                    MaterialPageRoute(
+                        builder: (_) => CallScreen(
+                            peerUserId: widget.recipientUserId,
+                            isVideo: false)),
+                  );
+                  // Start dialing in background
+                  Future.microtask(() async {
+                    try {
+                      await WebRTCCallService.instance.callPeer(
+                        toUserId: widget.recipientUserId,
+                        isVideo: false,
+                        conversationId: widget.chatId,
+                      );
+                    } catch (e) {
+                      if (!mounted) return;
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(content: Text('Call failed: ' + e.toString())),
+                      );
+                      Navigator.of(context).maybePop();
+                    } finally {
+                      if (mounted) setState(() => _isDialingVoice = false);
+                    }
+                  });
+                },
+              ),
+              IconButton(
+                icon: Icon(Icons.videocam_rounded, color: theme.primaryText),
+                tooltip: 'Video call',
+                onPressed: () async {
+                  if (_isDialingVideo) return;
+                  setState(() => _isDialingVideo = true);
+                  try {
+                    // Request mic + camera permissions
+                    final results = await [
+                      Permission.microphone,
+                      Permission.camera,
+                    ].request();
+                    if (!mounted) return;
+                    if (results[Permission.microphone]?.isGranted != true ||
+                        results[Permission.camera]?.isGranted != true) {
+                      setState(() => _isDialingVideo = false);
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(
+                            content: Text(
+                                'Camera and microphone permissions are required')),
+                      );
+                      return;
+                    }
+
+                    // Navigate first for instant feedback
+                    if (!mounted) return;
+                    Navigator.of(context, rootNavigator: true).push(
+                      MaterialPageRoute(
+                          builder: (_) => CallScreen(
+                              peerUserId: widget.recipientUserId,
+                              isVideo: true)),
+                    );
+
+                    // Start the call
+                    try {
+                      await WebRTCCallService.instance.callPeer(
+                        toUserId: widget.recipientUserId,
+                        isVideo: true,
+                        conversationId: widget.chatId,
+                      );
+                    } catch (e) {
+                      if (!mounted) return;
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(content: Text('Call failed: ' + e.toString())),
+                      );
+                      Navigator.of(context).maybePop();
+                    }
+                  } finally {
+                    if (mounted) setState(() => _isDialingVideo = false);
+                  }
+                },
+              ),
+            ],
+            if (widget.isGroupChat)
+              PopupMenuButton<String>(
+                tooltip: 'Group call',
+                onSelected: (v) async {
+                  if (v == 'voice') {
+                    final p = await Permission.microphone.request();
+                    if (!p.isGranted) return;
+                    if (!mounted) return;
+                    Navigator.of(context).push(MaterialPageRoute(
+                      builder: (_) => GroupCallScreen(
+                        conversationId: widget.chatId,
+                        isVideo: false,
+                      ),
+                    ));
+                  } else if (v == 'video') {
+                    final res = await [Permission.microphone, Permission.camera]
+                        .request();
+                    if (res[Permission.microphone]?.isGranted != true ||
+                        res[Permission.camera]?.isGranted != true) return;
+                    if (!mounted) return;
+                    Navigator.of(context).push(MaterialPageRoute(
+                      builder: (_) => GroupCallScreen(
+                        conversationId: widget.chatId,
+                        isVideo: true,
+                      ),
+                    ));
+                  }
+                },
+                itemBuilder: (_) => const [
+                  PopupMenuItem(
+                      value: 'voice', child: Text('Start group voice call')),
+                  PopupMenuItem(
+                      value: 'video', child: Text('Start group video call')),
+                ],
+                icon: Icon(Icons.groups_rounded, color: theme.primaryText),
+              ),
+            if (widget.isGroupChat && widget.pulseId != null)
+              IconButton(
+                icon: Icon(Icons.info_outline, color: theme.primaryText),
+                onPressed: () {
+                  Navigator.of(context).pushNamed(
+                    '/pulse-detail',
+                    arguments: {'pulseId': widget.pulseId},
+                  );
+                },
+              ),
+          ],
         ),
         body: SafeArea(
           child: Column(

@@ -11,6 +11,8 @@ import '../../auth/firebase_auth/auth_util.dart';
 import '../../backend/api_service.dart';
 import '../../backend/socket_service.dart';
 import '../../flutter_flow/flutter_flow_theme.dart';
+import 'package:permission_handler/permission_handler.dart';
+import '../calling/group_call_screen.dart';
 
 /// Live, energetic TikTok/IG-Live inspired group chat experience.
 /// Focus: floating reactions, animated presence, inline media, quick hype.
@@ -367,8 +369,41 @@ class _LiveGroupChatPageState extends ConsumerState<LiveGroupChatPage>
           ),
         ),
         IconButton(
+          onPressed: () async {
+            final p = await Permission.microphone.request();
+            if (!p.isGranted) return;
+            if (!mounted) return;
+            Navigator.of(context).push(MaterialPageRoute(
+              builder: (_) => GroupCallScreen(
+                conversationId: widget.chatId,
+                isVideo: false,
+              ),
+            ));
+          },
+          icon: Icon(Icons.call_rounded, color: t.primaryText),
+          tooltip: 'Start group voice call',
+        ),
+        IconButton(
           onPressed: () {},
           icon: Icon(Icons.info_outline, color: t.primaryText),
+        ),
+        IconButton(
+          onPressed: () async {
+            final res =
+                await [Permission.microphone, Permission.camera].request();
+            final micOk = res[Permission.microphone]?.isGranted == true;
+            final camOk = res[Permission.camera]?.isGranted == true;
+            if (!micOk || !camOk) return;
+            if (!mounted) return;
+            Navigator.of(context).push(MaterialPageRoute(
+              builder: (_) => GroupCallScreen(
+                conversationId: widget.chatId,
+                isVideo: true,
+              ),
+            ));
+          },
+          icon: Icon(Icons.videocam_rounded, color: t.primaryText),
+          tooltip: 'Start group video call',
         ),
         IconButton(
           onPressed: _openAddMembers,

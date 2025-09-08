@@ -11,6 +11,8 @@ import 'backend/firebase/firebase_config.dart';
 import '/flutter_flow/flutter_flow_theme.dart';
 import 'flutter_flow/flutter_flow_util.dart';
 import 'flutter_flow/nav/nav.dart';
+import 'backend/webrtc_call_service.dart';
+import 'pages/calling/call_screen.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -73,6 +75,47 @@ class _MyAppState extends State<MyApp> {
         _appStateNotifier.update(user);
       });
     jwtTokenStream.listen((_) {});
+    // Attach signaling listeners for incoming calls
+    WebRTCCallService.instance.attachSocketListeners();
+    WebRTCCallService.instance.onIncomingCall.listen((incoming) async {
+      if (!mounted) return;
+      final accept = await showDialog<bool>(
+        context: appNavigatorKey.currentContext ?? context,
+        builder: (ctx) {
+          return AlertDialog(
+            title: Text(
+                incoming.isVideo ? 'Incoming video call' : 'Incoming call'),
+            content: const Text('Do you want to accept?'),
+            actions: [
+              TextButton(
+                  onPressed: () => Navigator.of(ctx).pop(false),
+                  child: const Text('Decline')),
+              ElevatedButton(
+                  onPressed: () => Navigator.of(ctx).pop(true),
+                  child: const Text('Accept')),
+            ],
+          );
+        },
+      );
+      if (accept == true) {
+        if (incoming.remoteOffer != null) {
+          await WebRTCCallService.instance.acceptIncoming(
+            fromUserId: incoming.fromUserId,
+            remoteOffer: incoming.remoteOffer!,
+            isVideo: incoming.isVideo,
+          );
+        }
+        final ctx = appNavigatorKey.currentContext ?? context;
+        if (ctx.mounted) {
+          Navigator.of(ctx).push(
+            MaterialPageRoute(
+                builder: (_) => CallScreen(
+                    peerUserId: incoming.fromUserId,
+                    isVideo: incoming.isVideo)),
+          );
+        }
+      }
+    });
     Future.delayed(
       Duration(milliseconds: 1000),
       () => _appStateNotifier.stopShowingSplashImage(),

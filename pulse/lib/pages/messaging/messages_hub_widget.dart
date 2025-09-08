@@ -436,6 +436,8 @@ class _MessagesHubWidgetState extends State<MessagesHubWidget> {
 
                         final filteredDirectChats =
                             directChats.where(isLikelyDirect).toList();
+
+                        // Fallback 1: exactly two participants
                         List<Map<String, dynamic>> fallbackTwoParticipant = [];
                         if (filteredDirectChats.isEmpty) {
                           fallbackTwoParticipant = directChats
@@ -447,19 +449,56 @@ class _MessagesHubWidgetState extends State<MessagesHubWidget> {
                               .map((e) => Map<String, dynamic>.from(e))
                               .toList();
                         }
+
+                        // Fallback 2: any non-pulse conversation that is not flagged as group
+                        List<Map<String, dynamic>> fallbackNonPulseNonGroup =
+                            [];
+                        if (filteredDirectChats.isEmpty &&
+                            fallbackTwoParticipant.isEmpty &&
+                            directChats.isNotEmpty) {
+                          fallbackNonPulseNonGroup = directChats
+                              .where((c) =>
+                                  !hasPulseMarker(c) && c['isGroup'] != true)
+                              .map((e) => Map<String, dynamic>.from(e))
+                              .toList();
+                        }
+
                         final displayDirectChats =
                             filteredDirectChats.isNotEmpty
                                 ? filteredDirectChats
-                                : fallbackTwoParticipant;
+                                : (fallbackTwoParticipant.isNotEmpty
+                                    ? fallbackTwoParticipant
+                                    : fallbackNonPulseNonGroup);
 
                         if (displayDirectChats.isEmpty &&
                             directChats.isNotEmpty) {
-                          // Diagnostic log
+                          // Diagnostic logs (compact)
                           // ignore: avoid_print
                           print(
-                              '[DM-DIAG] No direct chats classified (even after fallback). First 2 convos:');
+                              '[DM-DIAG] No DMs after all fallbacks. totalConvos=' +
+                                  directChats.length.toString());
                           for (final c in directChats.take(2)) {
-                            print('[DM-DIAG] ' + c.toString());
+                            try {
+                              final id = (c['id'] ?? '').toString();
+                              final typeField =
+                                  (c['type'] ?? c['conversationType'])
+                                      ?.toString();
+                              final isGroup = c['isGroup'];
+                              final pulseMarker = hasPulseMarker(c);
+                              final partsLen = _parts(c).length;
+                              print('[DM-DIAG] id=' +
+                                  id +
+                                  ' type=' +
+                                  (typeField ?? '') +
+                                  ' isGroup=' +
+                                  (isGroup?.toString() ?? 'null') +
+                                  ' pulse=' +
+                                  pulseMarker.toString() +
+                                  ' participants=' +
+                                  partsLen.toString());
+                            } catch (_) {
+                              // ignore
+                            }
                           }
                         }
 

@@ -29,6 +29,12 @@ class _NotificationsPageState extends State<NotificationsPage> {
     await _future;
   }
 
+  Future<void> _reloadList() async {
+    setState(() {
+      _future = ApiService.instance.getNotifications();
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -51,7 +57,7 @@ class _NotificationsPageState extends State<NotificationsPage> {
             onPressed: () async {
               await ApiService.instance.markAllNotificationsRead();
               if (!mounted) return;
-              setState(() {});
+              await _reloadList();
             },
           )
         ],
@@ -120,6 +126,11 @@ class _NotificationsPageState extends State<NotificationsPage> {
                 final icon = _iconForType(type);
 
                 final isInvite = type.toLowerCase() == 'invite';
+                final data = n['data'];
+                final inviteStatus =
+                    (data is Map ? (data['status']?.toString() ?? '') : '');
+                final isInviteAccepted =
+                    isInvite && inviteStatus.toUpperCase() == 'ACCEPTED';
                 return InkWell(
                   onTap: () async {
                     final id = (n['id'] as String?) ?? '';
@@ -127,7 +138,7 @@ class _NotificationsPageState extends State<NotificationsPage> {
                       await ApiService.instance.markNotificationRead(id);
                     }
                     if (!mounted) return;
-                    setState(() {});
+                    await _reloadList();
                   },
                   child: Padding(
                     padding:
@@ -166,10 +177,13 @@ class _NotificationsPageState extends State<NotificationsPage> {
                                             .labelSmall),
                                   ]),
                                   const SizedBox(height: 4),
-                                  Text(message,
+                                  Text(
+                                      isInviteAccepted && message.isEmpty
+                                          ? 'You accepted this invitation'
+                                          : message,
                                       style: FlutterFlowTheme.of(context)
                                           .bodySmall),
-                                  if (isInvite) ...[
+                                  if (isInvite && !isInviteAccepted) ...[
                                     const SizedBox(height: 8),
                                     _inviteActions(context, n),
                                   ]
@@ -223,7 +237,7 @@ class _NotificationsPageState extends State<NotificationsPage> {
             if (id.isNotEmpty)
               await ApiService.instance.markNotificationRead(id);
             if (!mounted) return;
-            setState(() {});
+            await _reloadList();
           },
           child: const Text('Decline'),
         ),
@@ -240,7 +254,7 @@ class _NotificationsPageState extends State<NotificationsPage> {
               // TODO: optionally navigate directly to the conversation
             }
             if (!mounted) return;
-            setState(() {});
+            await _reloadList();
           },
           child: const Text('Join'),
         ),

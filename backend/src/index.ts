@@ -78,6 +78,92 @@ app.use('/api/posts', postsRoute);
 // Messaging routes (REST helpers for conversations/messages)
 app.use('/api', messagesRoute);
 
+// --- Notifications REST endpoints ---
+// List notifications for the authenticated user (paged)
+app.get('/api/notifications', authenticateUser, async (req, res) => {
+  try {
+    const me = (req.user as any).id as string;
+    const pageRaw = String((req.query as any).page ?? '0');
+    const sizeRaw = String((req.query as any).size ?? '20');
+    const page = Math.max(0, parseInt(pageRaw, 10) || 0);
+    const size = Math.min(100, Math.max(1, parseInt(sizeRaw, 10) || 20));
+
+    const notifications = await prisma.notification.findMany({
+      where: { userId: me },
+      orderBy: { createdAt: 'desc' },
+      skip: page * size,
+      take: size,
+    });
+
+    // Enrich invitation notifications: if related invitation is ACCEPTED, tweak text
+    const inviteNotifs = notifications.filter((n: any) => n.type === 'INVITE' && (n as any).data && (n as any).data.invitationId);
+    if (inviteNotifs.length) {
+      const ids = Array.from(new Set(inviteNotifs.map((n: any) => String((n as any).data.invitationId)))) as string[];
+      try {
+        const invites = await prisma.conversationInvitation.findMany({
+          where: { id: { in: ids } },
+          select: { id: true, status: true },
+        });
+        const statusById = new Map(invites.map(i => [i.id, i.status]));
+        // mutate a mapped copy to avoid altering original objects shape
+    const enriched = notifications.map((n: any) => {
+          if (n.type !== 'INVITE') return n;
+          const invId = n?.data?.invitationId ? String(n.data.invitationId) : undefined;
+          if (!invId) return n;
+          const status = statusById.get(invId);
+          if (status === 'ACCEPTED') {
+            return {
+              ...n,
+              title: 'Invitation accepted',
+      message: 'You accepted this invitation',
+      data: { ...(n as any).data, status: 'ACCEPTED' } as any,
+            } as typeof n;
+          }
+          return n;
+        });
+        return res.json(enriched);
+      } catch (enrichErr) {
+        console.warn('Failed to enrich invite notifications', enrichErr);
+        // Fall through to return raw notifications
+      }
+    }
+
+    res.json(notifications);
+  } catch (e) {
+    console.error('list notifications error', e);
+    res.status(500).json({ error: 'Failed to fetch notifications' });
+  }
+});
+
+// Mark a single notification as read
+app.post('/api/notifications/:id/read', authenticateUser, async (req, res) => {
+  try {
+    const me = (req.user as any).id as string;
+    const { id } = req.params as { id: string };
+    const found = await prisma.notification.findUnique({ where: { id } });
+    if (!found || found.userId !== me) {
+      return res.status(404).json({ error: 'Notification not found' });
+    }
+    await prisma.notification.update({ where: { id }, data: { isRead: true } });
+    res.json({ ok: true });
+  } catch (e) {
+    console.error('mark notification read error', e);
+    res.status(500).json({ error: 'Failed to update notification' });
+  }
+});
+
+// Mark all notifications as read for the authenticated user
+app.post('/api/notifications/mark-all-read', authenticateUser, async (req, res) => {
+  try {
+    const me = (req.user as any).id as string;
+    await prisma.notification.updateMany({ where: { userId: me, isRead: false }, data: { isRead: true } });
+    res.json({ ok: true });
+  } catch (e) {
+    console.error('mark all notifications read error', e);
+    res.status(500).json({ error: 'Failed to update notifications' });
+  }
+});
+
 // Health check endpoint to test database connection
 app.get('/api/health', async (req, res) => {
   try {
@@ -1474,6 +1560,10 @@ const io = new Server(server, {
 
 // In-memory map of userId -> socketIds (multi-device)
 const userSockets = new Map<string, Set<string>>();
+// In-memory group call rooms: conversationId -> Set<userId>
+const activeGroupCalls = new Map<string, Set<string>>();
+// Optional metadata for group calls
+const groupCallMeta = new Map<string, { isVideo: boolean; startedBy: string; startedAt: number }>();
 
 io.use(async (socket: any, next: any) => {
   try {
@@ -1625,6 +1715,241 @@ io.on('connection', (socket: any) => {
     if (set) {
       set.delete(socket.id);
       if (set.size === 0) userSockets.delete(user.id);
+    }
+
+    // Remove user from any active group calls and notify rooms
+    try {
+      for (const [cid, members] of activeGroupCalls.entries()) {
+        if (members.delete(user.id)) {
+          io.to(`conversation:${cid}`).emit('groupcall:participant-left', {
+            conversationId: cid,
+            userId: user.id,
+          });
+          if (members.size === 0) {
+            activeGroupCalls.delete(cid);
+            const meta = groupCallMeta.get(cid);
+            groupCallMeta.delete(cid);
+            io.to(`conversation:${cid}`).emit('groupcall:stopped', {
+              conversationId: cid,
+              reason: 'empty',
+              isVideo: meta?.isVideo ?? true,
+            });
+          }
+        }
+      }
+    } catch (e) {
+      // ignore cleanup errors
+    }
+  });
+
+  // --- WebRTC signaling: simple 1:1 call forwarding via Socket.IO ---
+  // Initiate a call (notify callee to present incoming UI)
+  socket.on('call:initiate', async (payload: { toUserId: string; conversationId?: string; isVideo?: boolean }) => {
+    try {
+      const { toUserId, conversationId, isVideo } = payload || ({} as any);
+      if (!toUserId) return;
+      const targets = userSockets.get(toUserId);
+      if (!targets) return;
+      const data = {
+        fromUserId: user.id,
+        conversationId: conversationId ?? null,
+        isVideo: !!isVideo,
+        timestamp: Date.now(),
+      };
+      targets.forEach((sid) => io.to(sid).emit('call:incoming', data));
+    } catch (e) {
+      console.error('call:initiate error', e);
+    }
+  });
+
+  // Forward SDP offer to callee
+  socket.on('call:offer', async (payload: { toUserId: string; sdp: any; conversationId?: string; isVideo?: boolean }) => {
+    try {
+      const { toUserId, sdp, conversationId, isVideo } = payload || ({} as any);
+      if (!toUserId || !sdp) return;
+      const targets = userSockets.get(toUserId);
+      if (!targets) return;
+      const data = { fromUserId: user.id, sdp, conversationId: conversationId ?? null, isVideo: !!isVideo };
+      targets.forEach((sid) => io.to(sid).emit('call:offer', data));
+    } catch (e) {
+      console.error('call:offer error', e);
+    }
+  });
+
+  // Forward SDP answer to caller
+  socket.on('call:answer', async (payload: { toUserId: string; sdp: any; conversationId?: string }) => {
+    try {
+      const { toUserId, sdp, conversationId } = payload || ({} as any);
+      if (!toUserId || !sdp) return;
+      const targets = userSockets.get(toUserId);
+      if (!targets) return;
+      const data = { fromUserId: user.id, sdp, conversationId: conversationId ?? null };
+      targets.forEach((sid) => io.to(sid).emit('call:answer', data));
+    } catch (e) {
+      console.error('call:answer error', e);
+    }
+  });
+
+  // Forward ICE candidates both ways
+  socket.on('call:ice-candidate', async (payload: { toUserId: string; candidate: any }) => {
+    try {
+      const { toUserId, candidate } = payload || ({} as any);
+      if (!toUserId || !candidate) return;
+      const targets = userSockets.get(toUserId);
+      if (!targets) return;
+      const data = { fromUserId: user.id, candidate };
+      targets.forEach((sid) => io.to(sid).emit('call:ice-candidate', data));
+    } catch (e) {
+      console.error('call:ice-candidate error', e);
+    }
+  });
+
+  // End a call (notify peer)
+  socket.on('call:end', async (payload: { toUserId: string; reason?: string }) => {
+    try {
+      const { toUserId, reason } = payload || ({} as any);
+      if (!toUserId) return;
+      const targets = userSockets.get(toUserId);
+      if (!targets) return;
+      const data = { fromUserId: user.id, reason: reason ?? null };
+      targets.forEach((sid) => io.to(sid).emit('call:ended', data));
+    } catch (e) {
+      console.error('call:end error', e);
+    }
+  });
+
+  // --- Group Call Signaling (mesh) ---
+  // Start a group call in a conversation (does not auto-join users)
+  socket.on('groupcall:start', async (payload: { conversationId: string; isVideo?: boolean }) => {
+    try {
+      const { conversationId, isVideo } = payload || ({} as any);
+      if (!conversationId) return;
+      const conversation = await (prisma as any).conversation.findUnique({
+        where: { id: conversationId }, include: { participants: true }
+      });
+      if (!conversation) return;
+      const isParticipant = conversation.participants.some((p: any) => p.id === user.id);
+      if (!isParticipant) return;
+      if (!activeGroupCalls.has(conversationId)) {
+        activeGroupCalls.set(conversationId, new Set());
+      }
+      groupCallMeta.set(conversationId, { isVideo: !!isVideo, startedBy: user.id, startedAt: Date.now() });
+      io.to(`conversation:${conversationId}`).emit('groupcall:started', {
+        conversationId,
+        isVideo: !!isVideo,
+        startedBy: user.id,
+        startedAt: Date.now(),
+      });
+    } catch (e) {
+      console.error('groupcall:start error', e);
+    }
+  });
+
+  // Stop an active group call
+  socket.on('groupcall:stop', async (payload: { conversationId: string; reason?: string }) => {
+    try {
+      const { conversationId, reason } = payload || ({} as any);
+      if (!conversationId) return;
+      const members = activeGroupCalls.get(conversationId);
+      if (!members) return;
+      activeGroupCalls.delete(conversationId);
+      const meta = groupCallMeta.get(conversationId);
+      groupCallMeta.delete(conversationId);
+      io.to(`conversation:${conversationId}`).emit('groupcall:stopped', {
+        conversationId,
+        reason: reason ?? null,
+        isVideo: meta?.isVideo ?? true,
+      });
+    } catch (e) {
+      console.error('groupcall:stop error', e);
+    }
+  });
+
+  // Join an active group call; returns current participants (excluding self)
+  socket.on('groupcall:join', async (payload: { conversationId: string }) => {
+    try {
+      const { conversationId } = payload || ({} as any);
+      if (!conversationId) return;
+      // Ensure a call has been started for this conversation
+      if (!activeGroupCalls.has(conversationId)) {
+        activeGroupCalls.set(conversationId, new Set());
+      }
+      const members = activeGroupCalls.get(conversationId)!;
+      // Validate membership in conversation
+      const conversation = await (prisma as any).conversation.findUnique({
+        where: { id: conversationId }, include: { participants: true }
+      });
+      if (!conversation) return;
+      const isParticipant = conversation.participants.some((p: any) => p.id === user.id);
+      if (!isParticipant) return;
+
+      // Notify others, then add (so they see this user as joined)
+      io.to(`conversation:${conversationId}`).emit('groupcall:participant-joining', {
+        conversationId,
+        userId: user.id,
+      });
+      members.add(user.id);
+
+      // Send current participants to this socket only
+      const others = Array.from(members).filter((id) => id !== user.id);
+      io.to(socket.id).emit('groupcall:participants', {
+        conversationId,
+        participants: others,
+      });
+
+      // Broadcast that this user joined
+      io.to(`conversation:${conversationId}`).emit('groupcall:participant-joined', {
+        conversationId,
+        userId: user.id,
+      });
+    } catch (e) {
+      console.error('groupcall:join error', e);
+    }
+  });
+
+  // Leave the group call
+  socket.on('groupcall:leave', async (payload: { conversationId: string }) => {
+    try {
+      const { conversationId } = payload || ({} as any);
+      if (!conversationId) return;
+      const members = activeGroupCalls.get(conversationId);
+      if (!members) return;
+      if (members.delete(user.id)) {
+        io.to(`conversation:${conversationId}`).emit('groupcall:participant-left', {
+          conversationId,
+          userId: user.id,
+        });
+        if (members.size === 0) {
+          activeGroupCalls.delete(conversationId);
+          const meta = groupCallMeta.get(conversationId);
+          groupCallMeta.delete(conversationId);
+          io.to(`conversation:${conversationId}`).emit('groupcall:stopped', {
+            conversationId,
+            reason: 'empty',
+            isVideo: meta?.isVideo ?? true,
+          });
+        }
+      }
+    } catch (e) {
+      console.error('groupcall:leave error', e);
+    }
+  });
+
+  // Signaling between participants (offer/answer/ice)
+  socket.on('groupcall:signal', async (payload: { conversationId: string; toUserId: string; kind: 'offer'|'answer'|'ice'; data: any }) => {
+    try {
+      const { conversationId, toUserId, kind, data } = payload || ({} as any);
+      if (!conversationId || !toUserId || !kind || data === undefined) return;
+      const members = activeGroupCalls.get(conversationId);
+      if (!members) return;
+      // Ensure both sender and receiver are in the call
+      if (!members.has(user.id) || !members.has(toUserId)) return;
+      const targets = userSockets.get(toUserId);
+      if (!targets) return;
+      const forwarded = { conversationId, fromUserId: user.id, kind, data };
+      targets.forEach((sid) => io.to(sid).emit('groupcall:signal', forwarded));
+    } catch (e) {
+      console.error('groupcall:signal error', e);
     }
   });
 });

@@ -246,12 +246,75 @@ router.post('/invitations/:invitationId/respond', authenticateUser, async (req, 
 				where: { id: invitationId },
 				data: { status: 'ACCEPTED', respondedAt: new Date() },
 			});
+
+			// Find and update the related notification for this invitee so it reflects the join
+			try {
+				const notif = await prisma.notification.findFirst({
+					where: {
+						userId: me,
+						type: 'INVITE',
+					},
+					orderBy: { createdAt: 'desc' },
+					take: 50,
+				});
+				// If we found a recent INVITE, check the payload to match invitationId
+				let targetNotif = notif;
+				if (!targetNotif) {
+					// no-op
+				} else {
+					// If payload doesn't match, try to scan a few more
+					const recent = await prisma.notification.findMany({
+						where: { userId: me, type: 'INVITE' },
+						orderBy: { createdAt: 'desc' },
+						take: 20,
+					});
+					targetNotif = recent.find((n: any) => {
+						const data: any = n.data || {};
+						return String(data.invitationId || '') === invitationId;
+					}) as any || targetNotif;
+				}
+				if (targetNotif) {
+					await prisma.notification.update({
+						where: { id: targetNotif.id },
+						data: {
+							type: 'INFO',
+							title: 'Joined group chat',
+							message: 'You have joined this group chat',
+							isRead: true,
+							data: {
+								conversationId: invitation.conversationId,
+								invitationId,
+								status: 'ACCEPTED',
+							} as any,
+						},
+					});
+				}
+			} catch (notifyErr) {
+				console.error('Failed to update invite notification on accept:', notifyErr);
+			}
 			return res.json({ ok: true, status: 'ACCEPTED' });
 		} else {
 			await prisma.conversationInvitation.update({
 				where: { id: invitationId },
 				data: { status: 'DECLINED', respondedAt: new Date() },
 			});
+			// Find and remove the related notification so it disappears from the feed
+			try {
+				const recent = await prisma.notification.findMany({
+					where: { userId: me, type: 'INVITE' },
+					orderBy: { createdAt: 'desc' },
+					take: 20,
+				});
+				const target = recent.find((n: any) => {
+					const data: any = n.data || {};
+					return String(data.invitationId || '') === invitationId;
+				});
+				if (target) {
+					await prisma.notification.delete({ where: { id: target.id } });
+				}
+			} catch (notifyErr) {
+				console.error('Failed to delete invite notification on decline:', notifyErr);
+			}
 			return res.json({ ok: true, status: 'DECLINED' });
 		}
 	} catch (e) {
