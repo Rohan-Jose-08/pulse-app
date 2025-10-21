@@ -4,6 +4,7 @@ import '../../flutter_flow/flutter_flow_theme.dart';
 import '../pulse_detail/pulse_detail_page.dart';
 import '../messaging/enhanced_messaging_page.dart';
 import '../../backend/api_service.dart';
+import '../../backend/socket_service.dart';
 
 // Simple profile model for viewing other users
 class PublicProfile {
@@ -364,17 +365,34 @@ class _ProfilePageState extends ConsumerState<ProfilePage>
   }
 
   void _openMessage(PublicProfile profile) {
-    final chatId = 'chat_${profile.id}';
-    Navigator.of(context).push(
-      MaterialPageRoute(
-        builder: (_) => EnhancedMessagingPage(
-          chatId: chatId,
-          recipientUserId: profile.id,
-          recipientName: profile.displayName,
-          recipientPhotoUrl: profile.photoUrl,
+    () async {
+      // Ensure we create or fetch a real backend conversation so it appears in the hub
+      final convo =
+          await ApiService.instance.getOrCreateConversationWith(profile.id);
+      if (!mounted) return;
+      if (convo == null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Unable to start conversation')),
+        );
+        return;
+      }
+
+      final chatId = (convo['id'] ?? '').toString();
+      // Proactively notify hub to refresh
+      try {
+        SocketService.instance.notifyConversationLocally(chatId);
+      } catch (_) {}
+      Navigator.of(context).push(
+        MaterialPageRoute(
+          builder: (_) => EnhancedMessagingPage(
+            chatId: chatId,
+            recipientUserId: profile.id,
+            recipientName: profile.displayName,
+            recipientPhotoUrl: profile.photoUrl,
+          ),
         ),
-      ),
-    );
+      );
+    }();
   }
 }
 

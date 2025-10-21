@@ -47,6 +47,12 @@ class _LiveGroupChatPageState extends ConsumerState<LiveGroupChatPage>
   Timer? _typingDebounce;
   bool _someoneTyping = false;
   final _random = Random();
+  // Socket stream subscriptions to avoid duplicate listeners
+  StreamSubscription<Map<String, dynamic>>? _msgSub;
+  StreamSubscription<Map<String, dynamic>>? _typingSub;
+  StreamSubscription<Map<String, dynamic>>? _ackSub;
+  // Effective conversation id (canonical id resolved by backend)
+  late String _chatId;
   // Inline reaction via system emoji keyboard
   final TextEditingController _reactionInputCtl = TextEditingController();
   final FocusNode _reactionFocus = FocusNode();
@@ -61,15 +67,29 @@ class _LiveGroupChatPageState extends ConsumerState<LiveGroupChatPage>
   void initState() {
     super.initState();
     _confetti = ConfettiController(duration: const Duration(seconds: 2));
+    _chatId = widget.chatId;
     SocketService.instance.connect();
-    SocketService.instance.joinConversation(widget.chatId);
+    SocketService.instance.joinConversation(_chatId);
     _bootstrap();
-    SocketService.instance.messages.listen(_onSocketMessage);
-    SocketService.instance.typing.listen(_onTyping);
+    // Ensure we don't register multiple listeners across hot-rebuilds/navigations
+    _msgSub = SocketService.instance.messages.listen(_onSocketMessage);
+    _typingSub = SocketService.instance.typing.listen(_onTyping);
+    // Normalize chat id based on server ack (handles pulse/direct ids mapping to legacy)
+    _ackSub = SocketService.instance.acks.listen((ack) {
+      try {
+        final cid = (ack['conversationId'] ?? ack['id'])?.toString();
+        if (cid != null && cid.isNotEmpty && cid != _chatId) {
+          // ignore: avoid_print
+          print('[LiveChat] normalizing chatId -> ' + cid);
+          setState(() => _chatId = cid);
+          SocketService.instance.joinConversation(_chatId);
+        }
+      } catch (_) {}
+    });
   }
 
   Future<void> _bootstrap() async {
-    final res = await ApiService.instance.listMessages(widget.chatId);
+    final res = await ApiService.instance.listMessages(_chatId);
     final msgs = (res?['messages'] as List<dynamic>? ?? [])
         .map((m) => _LiveMsg.fromJson(m as Map<String, dynamic>))
         .toList();
@@ -97,7 +117,7 @@ class _LiveGroupChatPageState extends ConsumerState<LiveGroupChatPage>
   void _onSocketMessage(dynamic raw) {
     try {
       final map = Map<String, dynamic>.from(raw as Map);
-      if (map['conversationId'] != widget.chatId) return;
+      if (map['conversationId'] != _chatId) return;
       // ignore: avoid_print
       print('[LiveChat socket] event=' + map.toString());
       // Reaction update path
@@ -151,7 +171,7 @@ class _LiveGroupChatPageState extends ConsumerState<LiveGroupChatPage>
   void _onTyping(dynamic raw) {
     try {
       final map = Map<String, dynamic>.from(raw as Map);
-      if (map['conversationId'] != widget.chatId) return;
+      if (map['conversationId'] != _chatId) return;
       final isOther = map['userId'] != currentUserUid;
       if (isOther) {
         setState(() => _someoneTyping = map['isTyping'] == true);
@@ -182,10 +202,12 @@ class _LiveGroupChatPageState extends ConsumerState<LiveGroupChatPage>
   Future<void> _send() async {
     final txt = _input.text.trim();
     if (txt.isEmpty || _sending) return;
+    // Guard against rapid double-taps
+    _sending = true;
     setState(() => _sending = true);
     try {
       SocketService.instance.sendMessage(
-        conversationId: widget.chatId,
+        conversationId: _chatId,
         text: txt,
       );
       _input.clear();
@@ -197,7 +219,7 @@ class _LiveGroupChatPageState extends ConsumerState<LiveGroupChatPage>
   }
 
   void _setTyping(bool v) {
-    SocketService.instance.setTyping(widget.chatId, v);
+    SocketService.instance.setTyping(_chatId, v);
   }
 
   void _maybeCelebrate() {
@@ -228,8 +250,7 @@ class _LiveGroupChatPageState extends ConsumerState<LiveGroupChatPage>
   void _quickReaction(String emoji) {
     HapticFeedback.lightImpact();
     _spawnReaction(emoji);
-    SocketService.instance
-        .sendMessage(conversationId: widget.chatId, text: emoji);
+    SocketService.instance.sendMessage(conversationId: _chatId, text: emoji);
   }
 
   @override
@@ -242,7 +263,17 @@ class _LiveGroupChatPageState extends ConsumerState<LiveGroupChatPage>
     _reactionFocus.dispose();
     _floatingCtl.close();
     _confetti.dispose();
-    SocketService.instance.leaveConversation(widget.chatId);
+    SocketService.instance.leaveConversation(_chatId);
+    try {
+      _ackSub?.cancel();
+    } catch (_) {}
+    // Cancel stream subscriptions
+    try {
+      _msgSub?.cancel();
+    } catch (_) {}
+    try {
+      _typingSub?.cancel();
+    } catch (_) {}
     super.dispose();
   }
 
@@ -375,7 +406,7 @@ class _LiveGroupChatPageState extends ConsumerState<LiveGroupChatPage>
             if (!mounted) return;
             Navigator.of(context).push(MaterialPageRoute(
               builder: (_) => GroupCallScreen(
-                conversationId: widget.chatId,
+                conversationId: _chatId,
                 isVideo: false,
               ),
             ));
@@ -397,7 +428,7 @@ class _LiveGroupChatPageState extends ConsumerState<LiveGroupChatPage>
             if (!mounted) return;
             Navigator.of(context).push(MaterialPageRoute(
               builder: (_) => GroupCallScreen(
-                conversationId: widget.chatId,
+                conversationId: _chatId,
                 isVideo: true,
               ),
             ));
@@ -667,12 +698,12 @@ class _LiveGroupChatPageState extends ConsumerState<LiveGroupChatPage>
     if (list.contains(currentUserUid)) {
       list.remove(currentUserUid);
       // Emit toggle event as well so backend persists removal (backend expected to handle idempotent toggle)
-      SocketService.instance.addReaction(
-          conversationId: widget.chatId, messageId: m.id, emoji: emoji);
+      SocketService.instance
+          .addReaction(conversationId: _chatId, messageId: m.id, emoji: emoji);
     } else {
       list.add(currentUserUid);
-      SocketService.instance.addReaction(
-          conversationId: widget.chatId, messageId: m.id, emoji: emoji);
+      SocketService.instance
+          .addReaction(conversationId: _chatId, messageId: m.id, emoji: emoji);
     }
     if (list.isEmpty) {
       map.remove(emoji);

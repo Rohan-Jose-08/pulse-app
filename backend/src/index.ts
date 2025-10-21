@@ -8,6 +8,7 @@ import postsRoute from './routes/posts';
 import messagesRoute from './routes/messages';
 import admin from './firebase';
 import http from 'http';
+import { userSockets, getIo, setIo } from './realtime';
 // Geolocation service (coordinate + reverse geocode utilities)
 import { haversineKm, reverseGeocode } from './services/geolocation';
 import { placesAutocomplete, placeDetails, parseLocationFromPlace } from './services/googlePlaces';
@@ -1540,6 +1541,23 @@ app.post('/api/pulses/:id/chat/messages', authenticateUser, async (req, res) => 
     }
     const msg = await (prisma as any).message.create({ data: { conversationId: convo.id, senderId: me, text: text ?? null, imageUrl: imageUrl ?? null, videoUrl: videoUrl ?? null } });
     await (prisma as any).conversation.update({ where: { id: convo.id }, data: { updatedAt: new Date(), lastMessageText: text ?? (videoUrl ? '[video]' : (imageUrl ? '[image]' : '')), lastSenderId: me } });
+    // Emit realtime updates
+    try {
+      io.to(`conversation:${convo.id}`).emit('message:new', {
+        id: msg.id,
+        conversationId: msg.conversationId,
+        senderId: msg.senderId,
+        text: msg.text,
+        imageUrl: msg.imageUrl,
+        createdAt: msg.createdAt,
+        videoUrl: msg.videoUrl,
+      });
+      (convo.participants as any[]).forEach(p => {
+        const sockets = userSockets.get(p.id);
+        if (!sockets) return;
+        sockets.forEach((sid: string) => io.to(sid).emit('conversation:updated', { conversationId: convo.id }));
+      });
+    } catch (_) {}
     res.status(201).json({ message: msg });
   } catch (e) {
     console.error('pulse chat message post error', e);
@@ -1557,13 +1575,18 @@ const io = new Server(server, {
     methods: ['GET', 'POST']
   }
 });
+setIo(io);
 
-// In-memory map of userId -> socketIds (multi-device)
-const userSockets = new Map<string, Set<string>>();
+// In-memory map of userId -> socketIds (multi-device) is provided by realtime.ts
 // In-memory group call rooms: conversationId -> Set<userId>
 const activeGroupCalls = new Map<string, Set<string>>();
 // Optional metadata for group calls
 const groupCallMeta = new Map<string, { isVideo: boolean; startedBy: string; startedAt: number }>();
+// In-memory dedupe for chat messages: key -> lastTimestamp
+// Key format: `${conversationId}|${senderId}|${text}|${imageUrl}|${videoUrl}`
+// Entries expire quickly to keep memory bounded.
+const recentMessageKeys = new Map<string, number>();
+const MESSAGE_DEDUPE_WINDOW_MS = 2000; // 2 seconds tolerance
 
 io.use(async (socket: any, next: any) => {
   try {
@@ -1574,6 +1597,7 @@ io.use(async (socket: any, next: any) => {
     const user = await prisma.user.findUnique({ where: { firebaseUid: uid } });
     if (!user) return next(new Error('User not found'));
     (socket as any).user = user;
+    try { console.log('[socket] auth ok', { userId: user.id, socketId: socket.id }); } catch (_) {}
     next();
   } catch (e) {
     next(new Error('Unauthorized'));
@@ -1587,9 +1611,11 @@ io.on('connection', (socket: any) => {
   // Track connections
   if (!userSockets.has(user.id)) userSockets.set(user.id, new Set());
   userSockets.get(user.id)!.add(socket.id);
+  try { console.log('[socket] connected', { userId: user.id, socketId: socket.id, socketsForUser: Array.from(userSockets.get(user.id) || []) }); } catch (_) {}
 
   socket.on('join:conversation', (conversationId: string) => {
     socket.join(`conversation:${conversationId}`);
+    try { console.log('[socket] join:conversation', { userId: user.id, socketId: socket.id, conversationId }); } catch (_) {}
   });
 
   socket.on('leave:conversation', (conversationId: string) => {
@@ -1598,17 +1624,124 @@ io.on('connection', (socket: any) => {
 
   socket.on('message:send', async (payload: { conversationId: string; text?: string; imageUrl?: string; videoUrl?: string }) => {
     try {
-      const { conversationId, text, imageUrl, videoUrl } = payload;
+  let { conversationId, text, imageUrl, videoUrl } = payload;
       // Basic validation
-      if (!conversationId || (!text && !imageUrl && !videoUrl)) return;
+      if (!conversationId || (!text && !imageUrl && !videoUrl)) {
+        try { socket.emit('message:error', { conversationId: conversationId || null, reason: 'INVALID_PAYLOAD' }); } catch (_) {}
+        try { console.warn('[socket] message:send invalid payload', { userId: user.id, conversationId, hasText: !!text, hasImage: !!imageUrl, hasVideo: !!videoUrl }); } catch (_) {}
+        return;
+      }
 
-      const conversation = await (prisma as any).conversation.findUnique({
+      // Load by conversationId; if not found, try interpreting it as a DirectConversation id,
+      // a PulseConversation id, or even a pulseId. If needed, create the legacy conversation.
+      let conversation = await (prisma as any).conversation.findUnique({
         where: { id: conversationId },
-        include: { participants: true },
+        include: { participants: true, pulse: { select: { id: true } } },
       });
-      if (!conversation) return;
-      const isParticipant = conversation.participants.some((p: any) => p.id === user.id);
-      if (!isParticipant) return;
+      if (!conversation) {
+        // 1) DirectConversation id fallback
+        const dconv = await (prisma as any).directConversation.findUnique({ where: { id: conversationId }, include: { participants: { select: { id: true } } } }).catch(() => null);
+        if (dconv) {
+          conversation = await (prisma as any).conversation.findUnique({ where: { id: conversationId }, include: { participants: true, pulse: { select: { id: true } } } });
+          if (!conversation) {
+            // create legacy conversation aligned to direct id
+            conversation = await (prisma as any).conversation.create({
+              data: {
+                id: dconv.id,
+                isGroup: false,
+                participants: { connect: (dconv.participants as any[]).map((u: any) => ({ id: u.id })) },
+                name: dconv.name ?? undefined,
+                avatarUrl: dconv.avatarUrl ?? undefined,
+              },
+              include: { participants: true, pulse: { select: { id: true } } },
+            });
+          }
+        }
+      }
+      if (!conversation) {
+        // 2) PulseConversation id fallback
+        const pconv = await (prisma as any).pulseConversation.findUnique({ where: { id: conversationId }, include: { participants: { select: { id: true } }, pulse: { select: { id: true, title: true, imageUrl: true } } } }).catch(() => null);
+        if (pconv) {
+          // prefer a legacy conversation with SAME id, else any conversation for this pulse, else create
+          let c = await (prisma as any).conversation.findUnique({ where: { id: pconv.id }, include: { participants: true, pulse: { select: { id: true } } } });
+          if (!c && pconv.pulse?.id) {
+            c = await (prisma as any).conversation.findFirst({ where: { pulseId: pconv.pulse.id }, include: { participants: true, pulse: { select: { id: true } } } });
+          }
+          if (!c && pconv.pulse?.id) {
+            c = await (prisma as any).conversation.create({
+              data: {
+                id: pconv.id, // align ids to simplify client usage
+                isGroup: true,
+                pulse: { connect: { id: pconv.pulse.id } },
+                participants: { connect: (pconv.participants as any[]).map((u: any) => ({ id: u.id })) },
+                name: pconv.pulse?.title ?? undefined,
+                avatarUrl: pconv.pulse?.imageUrl ?? undefined,
+              },
+              include: { participants: true, pulse: { select: { id: true } } },
+            });
+          }
+          if (c) {
+            conversation = c; conversationId = c.id;
+          }
+        }
+      }
+      if (!conversation) {
+        // 3) Interpret as pulseId
+        const pulse = await prisma.pulse.findUnique({ where: { id: conversationId } });
+        if (pulse) {
+          const c = await (prisma as any).conversation.findFirst({ where: { pulseId: conversationId }, include: { participants: true, pulse: { select: { id: true } } } });
+          if (c) {
+            conversation = c;
+            conversationId = c.id; // normalize
+          }
+        }
+      }
+      if (!conversation) {
+        try { socket.emit('message:error', { conversationId, reason: 'CONVERSATION_NOT_FOUND' }); } catch (_) {}
+        try { console.warn('[socket] message:send conversation not found', { userId: user.id, requestedId: conversationId }); } catch (_) {}
+        return;
+      }
+      try { console.log('[socket] message:send conversation resolved', { userId: user.id, conversationId: conversation.id, pulseId: conversation.pulse?.id || null }); } catch (_) {}
+      let isParticipant = conversation.participants.some((p: any) => p.id === user.id);
+      // If not a participant but this is a pulse chat, auto-connect if the user is part of the pulse
+      if (!isParticipant && conversation.pulse?.id) {
+        try {
+          const pulse = await prisma.pulse.findUnique({
+            where: { id: conversation.pulse.id },
+            include: { participants: { select: { id: true } }, author: { select: { id: true } } },
+          });
+          const isPulseMember = !!pulse && (pulse.author.id === user.id || (pulse.participants as any[]).some((p: any) => p.id === user.id));
+          if (isPulseMember) {
+            await (prisma as any).conversation.update({ where: { id: conversationId }, data: { participants: { connect: { id: user.id } } } });
+            isParticipant = true;
+          }
+        } catch (autoJoinErr) {
+          // ignore auto-join errors; fall through to membership check
+        }
+      }
+      if (!isParticipant) {
+        try { socket.emit('message:error', { conversationId, reason: 'NOT_PARTICIPANT' }); } catch (_) {}
+        try { console.warn('[socket] message:send not participant', { userId: user.id, conversationId }); } catch (_) {}
+        return;
+      }
+
+      // Simple in-memory dedupe to avoid accidental double-sends within a short window
+      const normalizedText = (text ?? '').trim();
+      const key = `${conversationId}|${user.id}|${normalizedText}|${imageUrl ?? ''}|${videoUrl ?? ''}`;
+      const now = Date.now();
+      const last = recentMessageKeys.get(key) || 0;
+      if (now - last < MESSAGE_DEDUPE_WINDOW_MS) {
+        // Ignore as duplicate
+        return;
+      }
+      recentMessageKeys.set(key, now);
+      // Opportunistic cleanup: remove stale entries occasionally
+      if (recentMessageKeys.size > 5000) {
+        const cutoff = now - MESSAGE_DEDUPE_WINDOW_MS * 4;
+        for (const [k, ts] of recentMessageKeys.entries()) {
+          if (ts < cutoff) recentMessageKeys.delete(k);
+        }
+      }
 
       const msg = await (prisma as any).message.create({
         data: {
@@ -1620,6 +1753,10 @@ io.on('connection', (socket: any) => {
         },
       });
 
+      // Ack to sender so client can confirm persistence
+      try { socket.emit('message:ack', { conversationId, id: msg.id, createdAt: msg.createdAt }); } catch (_) {}
+      try { console.log('[socket] message:send persisted', { userId: user.id, conversationId, messageId: msg.id }); } catch (_) {}
+
       // Update conversation last message metadata
       await (prisma as any).conversation.update({
         where: { id: conversationId },
@@ -1630,6 +1767,26 @@ io.on('connection', (socket: any) => {
         },
       });
 
+      // Best-effort: mirror last message metadata to new separated models if present
+      try {
+        await (prisma as any).directConversation.update({
+          where: { id: conversationId },
+          data: {
+            updatedAt: new Date(),
+            lastMessageText: text ?? (videoUrl ? '[video]' : (imageUrl ? '[image]' : '')),
+            lastSenderId: user.id,
+          },
+        }).catch(() => null);
+        await (prisma as any).pulseConversation.update({
+          where: { id: conversationId },
+          data: {
+            updatedAt: new Date(),
+            lastMessageText: text ?? (videoUrl ? '[video]' : (imageUrl ? '[image]' : '')),
+            lastSenderId: user.id,
+          },
+        }).catch(() => null);
+      } catch (_) { /* ignore */ }
+
       io.to(`conversation:${conversationId}`).emit('message:new', {
         id: msg.id,
         conversationId: msg.conversationId,
@@ -1639,6 +1796,25 @@ io.on('connection', (socket: any) => {
         createdAt: msg.createdAt,
         videoUrl: msg.videoUrl,
       });
+      try { console.log('[socket] message:new emitted to room', { conversationId }); } catch (_) {}
+
+      // Also directly emit to participant sockets (safety net if a client didn't join the room)
+      try {
+        conversation.participants.forEach((p: any) => {
+          const sockets = userSockets.get(p.id);
+          if (!sockets) return;
+          sockets.forEach((sid: string) => io.to(sid).emit('message:new', {
+            id: msg.id,
+            conversationId: msg.conversationId,
+            senderId: msg.senderId,
+            text: msg.text,
+            imageUrl: msg.imageUrl,
+            createdAt: msg.createdAt,
+            videoUrl: msg.videoUrl,
+          }));
+        });
+        console.log('[socket] message:new emitted to direct sockets', { conversationId, recipients: conversation.participants.map((p: any) => p.id) });
+      } catch (_) {}
 
       // Also notify participants who are not in the room
       conversation.participants.forEach((p: any) => {

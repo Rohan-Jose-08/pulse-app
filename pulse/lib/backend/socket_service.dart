@@ -9,11 +9,16 @@ class SocketService {
   static final SocketService instance = SocketService._();
 
   IO.Socket? _socket;
+  bool _isConnecting =
+      false; // Prevent parallel connect() calls creating multiple sockets
   final _messageController = StreamController<Map<String, dynamic>>.broadcast();
   final _typingController = StreamController<Map<String, dynamic>>.broadcast();
   final _conversationUpdated =
       StreamController<Map<String, dynamic>>.broadcast();
+  final _ackController = StreamController<Map<String, dynamic>>.broadcast();
+  final _errorController = StreamController<Map<String, dynamic>>.broadcast();
   final List<Map<String, dynamic>> _pendingEmits = [];
+  final Set<String> _joinedRooms = <String>{};
 
   // --- WebRTC signaling streams ---
   final _callIncoming = StreamController<Map<String, dynamic>>.broadcast();
@@ -35,6 +40,8 @@ class SocketService {
   Stream<Map<String, dynamic>> get typing => _typingController.stream;
   Stream<Map<String, dynamic>> get conversationUpdates =>
       _conversationUpdated.stream;
+  Stream<Map<String, dynamic>> get acks => _ackController.stream;
+  Stream<Map<String, dynamic>> get errors => _errorController.stream;
   Stream<Map<String, dynamic>> get callIncoming => _callIncoming.stream;
   Stream<Map<String, dynamic>> get callOffer => _callOffer.stream;
   Stream<Map<String, dynamic>> get callAnswer => _callAnswer.stream;
@@ -53,8 +60,32 @@ class SocketService {
 
   bool get isConnected => _socket?.connected == true;
 
+  // Manually notify listeners that a conversation was updated/created.
+  // Useful when a conversation is created via REST and the server does not emit an event.
+  void notifyConversationLocally(String conversationId) {
+    try {
+      _conversationUpdated.add({'conversationId': conversationId});
+    } catch (_) {
+      // ignore
+    }
+  }
+
   Future<void> connect({String? baseUrl}) async {
-    if (_socket != null && _socket!.connected) return;
+    // Avoid overlapping connection attempts
+    if (_isConnecting) {
+      return;
+    }
+    // If a socket already exists
+    if (_socket != null) {
+      // If already connected, nothing to do
+      if (_socket!.connected) return;
+      // If a connection attempt is in-flight, avoid creating a second socket
+      if (_isConnecting) return;
+      // Reuse existing socket instance if present by calling connect() again
+      _isConnecting = true;
+      _socket!.connect();
+      return;
+    }
     // Ensure the backend user exists before attempting socket auth
     await ApiService.instance.ensureUserExists();
     final token = await FirebaseAuth.instance.currentUser?.getIdToken();
@@ -65,6 +96,8 @@ class SocketService {
         ' (token: ' +
         (token != null ? 'present' : 'absent') +
         ')');
+    // Mark as connecting before creating the socket to avoid races
+    _isConnecting = true;
     _socket = IO.io(
       url,
       IO.OptionBuilder()
@@ -79,9 +112,16 @@ class SocketService {
           .build(),
     );
     _socket!.onConnect((_) {
+      _isConnecting = false;
       // Debug: connection established
       // ignore: avoid_print
       print('Socket connected');
+      // Rejoin previously joined conversation rooms
+      for (final roomId in _joinedRooms) {
+        try {
+          _socket!.emit('join:conversation', roomId);
+        } catch (_) {}
+      }
       // Flush any pending emits
       if (_pendingEmits.isEmpty) return;
       final toSend = List<Map<String, dynamic>>.from(_pendingEmits);
@@ -91,11 +131,16 @@ class SocketService {
       }
     });
     _socket!.onDisconnect((_) {
+      _isConnecting = false;
       // ignore: avoid_print
       print('Socket disconnected');
     });
     _socket!.on('message:new',
         (data) => _messageController.add(Map<String, dynamic>.from(data)));
+    _socket!.on('message:ack',
+        (data) => _ackController.add(Map<String, dynamic>.from(data)));
+    _socket!.on('message:error',
+        (data) => _errorController.add(Map<String, dynamic>.from(data)));
     _socket!.on('typing',
         (data) => _typingController.add(Map<String, dynamic>.from(data)));
     _socket!.on('conversation:updated',
@@ -125,10 +170,12 @@ class SocketService {
     _socket!.on('groupcall:signal',
         (data) => _gcSignal.add(Map<String, dynamic>.from(data)));
     _socket!.onError((e) {
+      _isConnecting = false;
       // ignore: avoid_print
       print('Socket error: ' + e.toString());
     });
     _socket!.onConnectError((e) {
+      _isConnecting = false;
       // ignore: avoid_print
       print('Socket connect error: ' + e.toString());
     });
@@ -211,10 +258,12 @@ class SocketService {
   }
 
   void joinConversation(String conversationId) {
+    _joinedRooms.add(conversationId);
     _emitOrQueue('join:conversation', conversationId);
   }
 
   void leaveConversation(String conversationId) {
+    _joinedRooms.remove(conversationId);
     _emitOrQueue('leave:conversation', conversationId);
   }
 
@@ -294,8 +343,13 @@ class SocketService {
   }
 
   Future<void> disconnect() async {
-    _socket?.disconnect();
-    _socket?.dispose();
+    try {
+      _socket?.disconnect();
+    } catch (_) {}
+    try {
+      _socket?.dispose();
+    } catch (_) {}
     _socket = null;
+    _isConnecting = false;
   }
 }

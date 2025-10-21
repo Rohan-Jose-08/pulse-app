@@ -67,6 +67,8 @@ model User {
 
   // Messaging
   conversations Conversation[] @relation("ConversationParticipants")
+  directConversations DirectConversation[] @relation("DirectConversationParticipants")
+  pulseConversations  PulseConversation[]  @relation("PulseConversationParticipants")
   sentMessages  Message[]
   messageReactions MessageReaction[]
 
@@ -113,6 +115,8 @@ model Pulse {
 
   // Back relation to conversations (group chat)
   conversations Conversation[]
+  // New back relation to PulseConversation
+  pulseConversations PulseConversation[]
 
   @@index([activeFrom])
   @@index([activeUntil])
@@ -262,6 +266,37 @@ model Conversation {
   @@unique([pulseId])
 }
 
+// New: Split conversation structures for clarity and simpler querying.
+// Direct (1:1 or small non-pulse) conversations
+model DirectConversation {
+  id              String   @id @default(cuid())
+  participants    User[]   @relation("DirectConversationParticipants")
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  lastMessageText String?
+  lastSenderId    String?
+  name            String?
+  avatarUrl       String?
+
+  @@index([updatedAt])
+}
+
+// Pulse group chat conversations
+model PulseConversation {
+  id              String   @id @default(cuid())
+  pulseId         String   @unique
+  pulse           Pulse    @relation(fields: [pulseId], references: [id], onDelete: Cascade)
+  participants    User[]   @relation("PulseConversationParticipants")
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  lastMessageText String?
+  lastSenderId    String?
+  name            String?
+  avatarUrl       String?
+
+  @@index([updatedAt])
+}
+
 model Message {
   id             String   @id @default(cuid())
   conversationId String
@@ -313,3 +348,6 @@ model ConversationInvitation {
   @@index([conversationId])
   @@index([status])
 }
+
+// New: Invitations targeting PulseConversation specifically
+// Removed pending dedicated group invitation model for now to avoid breaking existing flows.

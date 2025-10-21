@@ -624,12 +624,25 @@ class ApiService {
       if (!ensured) return null;
       final token = await _getAuthToken();
       if (token == null) return null;
-      final url = '$_baseUrl/conversations/with/$otherUserId';
-      final response =
-          await _client.post(Uri.parse(url), headers: _getHeaders(token));
-      if (response.statusCode >= 200 && response.statusCode < 300) {
-        return jsonDecode(response.body) as Map<String, dynamic>;
-      }
+      // Prefer new direct-conversations endpoint
+      http.Response? response;
+      try {
+        final newUrl = '$_baseUrl/direct-conversations/with/$otherUserId';
+        response =
+            await _client.post(Uri.parse(newUrl), headers: _getHeaders(token));
+        if (response.statusCode >= 200 && response.statusCode < 300) {
+          return jsonDecode(response.body) as Map<String, dynamic>;
+        }
+      } catch (_) {}
+      // Fallback to legacy
+      try {
+        final url = '$_baseUrl/conversations/with/$otherUserId';
+        response =
+            await _client.post(Uri.parse(url), headers: _getHeaders(token));
+        if (response.statusCode >= 200 && response.statusCode < 300) {
+          return jsonDecode(response.body) as Map<String, dynamic>;
+        }
+      } catch (_) {}
     } catch (e) {
       print('Error getOrCreateConversationWith: $e');
     }
@@ -668,6 +681,86 @@ class ApiService {
     return null;
   }
 
+  // Strictly list only direct (non-pulse, non-group) conversations
+  Future<List<Map<String, dynamic>>?> listDirectConversations() async {
+    try {
+      final ensured = await ensureUserExists();
+      if (!ensured) return null;
+      final token = await _getAuthToken();
+      if (token == null) return null;
+      // Prefer new endpoint
+      try {
+        final url = '$_baseUrl/direct-conversations';
+        final response =
+            await _client.get(Uri.parse(url), headers: _getHeaders(token));
+        if (response.statusCode == 200) {
+          final data = jsonDecode(response.body);
+          if (data is List) return List<Map<String, dynamic>>.from(data);
+        }
+      } catch (_) {}
+      // Fallback to legacy
+      try {
+        final url = '$_baseUrl/conversations-direct';
+        final response =
+            await _client.get(Uri.parse(url), headers: _getHeaders(token));
+        if (response.statusCode == 200) {
+          final data = jsonDecode(response.body);
+          if (data is List) return List<Map<String, dynamic>>.from(data);
+        } else {
+          try {
+            final body = response.body;
+            // ignore: avoid_print
+            print(
+                'listDirectConversations non-200: ${response.statusCode} body=${body.length > 200 ? body.substring(0, 200) + '…' : body}');
+          } catch (_) {}
+        }
+      } catch (_) {}
+    } catch (e) {
+      print('Error listDirectConversations: $e');
+    }
+    return null;
+  }
+
+  // Strictly list only pulse group chat conversations
+  Future<List<Map<String, dynamic>>?> listPulseConversations() async {
+    try {
+      final ensured = await ensureUserExists();
+      if (!ensured) return null;
+      final token = await _getAuthToken();
+      if (token == null) return null;
+      // Prefer new endpoint
+      try {
+        final url = '$_baseUrl/pulse-conversations';
+        final response =
+            await _client.get(Uri.parse(url), headers: _getHeaders(token));
+        if (response.statusCode == 200) {
+          final data = jsonDecode(response.body);
+          if (data is List) return List<Map<String, dynamic>>.from(data);
+        }
+      } catch (_) {}
+      // Fallback to legacy
+      try {
+        final url = '$_baseUrl/conversations-pulse';
+        final response =
+            await _client.get(Uri.parse(url), headers: _getHeaders(token));
+        if (response.statusCode == 200) {
+          final data = jsonDecode(response.body);
+          if (data is List) return List<Map<String, dynamic>>.from(data);
+        } else {
+          try {
+            final body = response.body;
+            // ignore: avoid_print
+            print(
+                'listPulseConversations non-200: ${response.statusCode} body=${body.length > 200 ? body.substring(0, 200) + '…' : body}');
+          } catch (_) {}
+        }
+      } catch (_) {}
+    } catch (e) {
+      print('Error listPulseConversations: $e');
+    }
+    return null;
+  }
+
   Future<Map<String, dynamic>?> listMessages(String conversationId,
       {String? cursor, int limit = 30}) async {
     try {
@@ -675,18 +768,33 @@ class ApiService {
       if (!ensured) return null;
       final token = await _getAuthToken();
       if (token == null) return null;
-      final url =
-          Uri.parse('$_baseUrl/conversations/$conversationId/messages').replace(
-        queryParameters: {
-          if (cursor != null) 'cursor': cursor,
-          'limit': limit.toString(),
-        },
-      );
-      final response = await _client.get(url, headers: _getHeaders(token));
-      if (response.statusCode == 200) {
-        final data = jsonDecode(response.body);
-        if (data is Map<String, dynamic>) return data;
+      // Prefer new endpoints; fall back to legacy
+      final qp = {
+        if (cursor != null) 'cursor': cursor,
+        'limit': limit.toString(),
+      };
+
+      Future<Map<String, dynamic>?> tryGet(String path) async {
+        final url = Uri.parse('$_baseUrl/$path').replace(queryParameters: qp);
+        final resp = await _client.get(url, headers: _getHeaders(token));
+        if (resp.statusCode == 200) {
+          final data = jsonDecode(resp.body);
+          if (data is Map<String, dynamic>) return data;
+        }
+        return null;
       }
+
+      // 1) Direct conversation
+      final direct =
+          await tryGet('direct-conversations/$conversationId/messages');
+      if (direct != null) return direct;
+      // 2) Pulse conversation
+      final pulse =
+          await tryGet('pulse-conversations/$conversationId/messages');
+      if (pulse != null) return pulse;
+      // 3) Legacy
+      final legacy = await tryGet('conversations/$conversationId/messages');
+      if (legacy != null) return legacy;
     } catch (e) {
       print('Error listMessages: $e');
     }
@@ -734,40 +842,57 @@ class ApiService {
         print('getPulseChat: No auth token available');
         return null;
       }
-      final getUrl = '$_baseUrl/pulses/$pulseId/chat';
-      print('getPulseChat: Trying GET $getUrl');
-      http.Response? response;
+      // Prefer new pulse-conversations endpoint
       try {
-        response =
-            await _client.get(Uri.parse(getUrl), headers: _getHeaders(token));
-      } catch (e) {
-        print('getPulseChat GET error: $e');
-      }
-      if (response == null ||
-          response.statusCode == 404 ||
-          response.statusCode == 405) {
-        // Fallback to legacy POST create-or-get behavior
-        final postUrl = getUrl;
-        print('getPulseChat: Fallback POST $postUrl');
-        response =
-            await _client.post(Uri.parse(postUrl), headers: _getHeaders(token));
-      }
-      if (response.statusCode >= 200 && response.statusCode < 300) {
-        print('getPulseChat: Response status: ${response.statusCode}');
-        final body = response.body;
-        // Avoid logging potentially large data; truncate
-        print('getPulseChat: Response body (truncated): ' +
-            (body.length > 300 ? body.substring(0, 300) + '...' : body));
-        final data = jsonDecode(body);
-        if (data is Map<String, dynamic>) {
-          if (data.containsKey('conversationId')) {
-            data['id'] = data['conversationId'];
-          }
-          return data;
+        final newUrl = '$_baseUrl/pulse-conversations/by-pulse/$pulseId';
+        final response =
+            await _client.post(Uri.parse(newUrl), headers: _getHeaders(token));
+        if (response.statusCode >= 200 && response.statusCode < 300) {
+          final data = jsonDecode(response.body);
+          if (data is Map<String, dynamic>) return data;
         }
-      } else {
-        print(
-            'getPulseChat failed final: ${response.statusCode} - ${response.body}');
+      } catch (e) {
+        print('getPulseChat new route error: $e');
+      }
+
+      // Legacy behavior
+      try {
+        final getUrl = '$_baseUrl/pulses/$pulseId/chat';
+        print('getPulseChat: Trying GET $getUrl');
+        http.Response? response;
+        try {
+          response =
+              await _client.get(Uri.parse(getUrl), headers: _getHeaders(token));
+        } catch (e) {
+          print('getPulseChat GET error: $e');
+        }
+        if (response == null ||
+            response.statusCode == 404 ||
+            response.statusCode == 405) {
+          // Fallback to legacy POST create-or-get behavior
+          final postUrl = getUrl;
+          print('getPulseChat: Fallback POST $postUrl');
+          response = await _client.post(Uri.parse(postUrl),
+              headers: _getHeaders(token));
+        }
+        if (response.statusCode >= 200 && response.statusCode < 300) {
+          print('getPulseChat: Response status: ${response.statusCode}');
+          final body = response.body;
+          print('getPulseChat: Response body (truncated): ' +
+              (body.length > 300 ? body.substring(0, 300) + '...' : body));
+          final data = jsonDecode(body);
+          if (data is Map<String, dynamic>) {
+            if (data.containsKey('conversationId')) {
+              data['id'] = data['conversationId'];
+            }
+            return data;
+          }
+        } else {
+          print(
+              'getPulseChat failed final: ${response.statusCode} - ${response.body}');
+        }
+      } catch (e) {
+        print('getPulseChat legacy route error: $e');
       }
     } catch (e) {
       print('Error getPulseChat: $e');

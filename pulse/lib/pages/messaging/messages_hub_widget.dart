@@ -25,6 +25,7 @@ final _conversationsProvider = StreamProvider.autoDispose
     .family<List<Map<String, dynamic>>, String>((ref, uid) {
   final controller = StreamController<List<Map<String, dynamic>>>();
   List<Map<String, dynamic>> items = [];
+  DateTime _lastReload = DateTime.fromMillisecondsSinceEpoch(0);
 
   List<Map<String, dynamic>> _normalize(List<Map<String, dynamic>> raw) {
     // Ensure consistent sorting (most recent updatedAt desc)
@@ -40,13 +41,33 @@ final _conversationsProvider = StreamProvider.autoDispose
 
   Future<void> _load({bool silent = false}) async {
     try {
-      final list = await ApiService.instance.listConversations();
-      final convs = (list ?? [])
-          .whereType<Map<String, dynamic>>()
-          .map((c) => Map<String, dynamic>.from(c))
-          .toList();
-      items = _normalize(convs);
+      // Prefer strict direct conversations endpoint
+      List<Map<String, dynamic>>? list =
+          await ApiService.instance.listDirectConversations();
+
+      // Fallback: if the direct endpoint is unavailable or returns empty,
+      // fall back to the general conversations list and let the UI filter.
+      if (list == null || list.isEmpty) {
+        if (!silent) {
+          // ignore: avoid_print
+          print(
+              '[DMProvider] direct endpoint returned ${list == null ? 'null' : 'empty'}; falling back to /conversations');
+        }
+        final all = await ApiService.instance.listConversations();
+        list = all;
+      }
+
+      // Keep all; UI separates DMs vs group/pulse deterministically
+      final convs = (list ?? []).whereType<Map<String, dynamic>>().toList();
+      items =
+          _normalize(convs.map((c) => Map<String, dynamic>.from(c)).toList());
+      _lastReload = DateTime.now();
       controller.add(items);
+      // Debug: counts
+      // ignore: avoid_print
+      if (!silent) {
+        print('[DMProvider] loaded total=' + (list?.length.toString() ?? '0'));
+      }
     } catch (e) {
       if (!silent) {
         // ignore: avoid_print
@@ -79,7 +100,11 @@ final _conversationsProvider = StreamProvider.autoDispose
         });
         controller.add(items);
       } else {
-        _load(silent: true); // new conversation
+        // Unknown conversation; throttle reloads to avoid frequent refreshes from group chat traffic
+        final now = DateTime.now();
+        if (now.difference(_lastReload).inMilliseconds > 1200) {
+          _load(silent: true);
+        }
       }
     } catch (_) {}
   });
@@ -110,7 +135,7 @@ final _pulseConversationsProvider = StreamProvider.autoDispose
   }
 
   (() async {
-    final list = await ApiService.instance.listConversations();
+    final list = await ApiService.instance.listPulseConversations();
     items = (list ?? []).where(isPulseGroup).toList();
     // Debug: counts
     // ignore: avoid_print
@@ -130,7 +155,7 @@ final _pulseConversationsProvider = StreamProvider.autoDispose
   })();
 
   final sub = SocketService.instance.conversationUpdates.listen((_) async {
-    final list = await ApiService.instance.listConversations();
+    final list = await ApiService.instance.listPulseConversations();
     items = (list ?? []).where(isPulseGroup).toList();
     controller.add(items);
   });
@@ -414,24 +439,13 @@ class _MessagesHubWidgetState extends State<MessagesHubWidget> {
                             const [];
 
                         bool isLikelyDirect(Map<String, dynamic> conv) {
+                          // Hard exclusions: any pulse-linked or group conversation is NOT a DM
+                          if (conv['isGroup'] == true) return false;
+                          if (hasPulseMarker(conv)) return false;
                           final id = conv['id']?.toString();
                           if (id != null && pulseIds.contains(id)) return false;
-                          if (hasPulseMarker(conv)) return false;
-                          final typeField =
-                              (conv['type'] ?? conv['conversationType'])
-                                  ?.toString()
-                                  .toLowerCase();
-                          if (typeField == 'direct' ||
-                              typeField == 'dm' ||
-                              typeField == 'private') return true;
-                          final parts = _parts(conv);
-                          if (parts.length == 2) return true;
-                          if (parts.length == 1 && conv['isGroup'] != true)
-                            return true;
-                          // Some backends supply participants only after join; allow missing participants when explicit flag set
-                          if ((parts.isEmpty) && conv['isGroup'] == false)
-                            return true;
-                          return false;
+                          // If it passes the exclusions above, treat it as a DM
+                          return true;
                         }
 
                         final filteredDirectChats =
@@ -442,6 +456,12 @@ class _MessagesHubWidgetState extends State<MessagesHubWidget> {
                         if (filteredDirectChats.isEmpty) {
                           fallbackTwoParticipant = directChats
                               .where((c) {
+                                // Exclude pulse/groups even in fallback
+                                if (hasPulseMarker(c)) return false;
+                                if (c['isGroup'] == true) return false;
+                                final id = c['id']?.toString();
+                                if (id != null && pulseIds.contains(id))
+                                  return false;
                                 final parts = _parts(c);
                                 return parts.length ==
                                     2; // treat as direct fallback
@@ -457,8 +477,14 @@ class _MessagesHubWidgetState extends State<MessagesHubWidget> {
                             fallbackTwoParticipant.isEmpty &&
                             directChats.isNotEmpty) {
                           fallbackNonPulseNonGroup = directChats
-                              .where((c) =>
-                                  !hasPulseMarker(c) && c['isGroup'] != true)
+                              .where((c) {
+                                if (hasPulseMarker(c)) return false;
+                                if (c['isGroup'] == true) return false;
+                                final id = c['id']?.toString();
+                                if (id != null && pulseIds.contains(id))
+                                  return false;
+                                return true;
+                              })
                               .map((e) => Map<String, dynamic>.from(e))
                               .toList();
                         }
