@@ -398,7 +398,7 @@ router.get('/:userId/stats', async (req, res) => {
   }
 });
 
-// POST /api/profile/:userId/follow - Follow a user
+// POST /api/profile/:userId/follow - Send follow request to a user
 router.post('/:userId/follow', authenticateUser, async (req, res) => {
   try {
     const { userId } = req.params;
@@ -431,21 +431,37 @@ router.post('/:userId/follow', authenticateUser, async (req, res) => {
       return res.status(400).json({ error: 'Already following this user' });
     }
 
-    // Create follow relationship
-    const follow = await prisma.follow.create({
+    // Check if follow request already exists
+    const existingRequest = await prisma.conversationInvitation.findFirst({
+      where: {
+        inviterId: followerId,
+        inviteeId: userId,
+        invitationType: 'FOLLOW_REQUEST',
+        status: 'PENDING'
+      }
+    });
+
+    if (existingRequest) {
+      return res.status(400).json({ error: 'Follow request already sent' });
+    }
+
+    // Create follow request invitation
+    const followRequest = await prisma.conversationInvitation.create({
       data: {
-        followerId,
-        followingId: userId
+        inviterId: followerId,
+        inviteeId: userId,
+        invitationType: 'FOLLOW_REQUEST',
+        status: 'PENDING'
       },
       include: {
-        follower: {
+        inviter: {
           select: {
             id: true,
             displayName: true,
             profileImageUrl: true
           }
         },
-        following: {
+        invitee: {
           select: {
             id: true,
             displayName: true,
@@ -455,25 +471,28 @@ router.post('/:userId/follow', authenticateUser, async (req, res) => {
       }
     });
 
-    // Update follower counts
-    await prisma.user.update({
-      where: { id: userId },
-      data: { followersCount: { increment: 1 } }
-    });
-
-    await prisma.user.update({
-      where: { id: followerId },
-      data: { followingCount: { increment: 1 } }
+    // Create notification for the user being followed
+    await prisma.notification.create({
+      data: {
+        userId: userId,
+        type: 'FOLLOW_REQUEST',
+        title: 'New Follow Request',
+        message: `${req.user.displayName} sent you a follow request`,
+        data: {
+          requesterId: followerId,
+          invitationId: followRequest.id
+        }
+      }
     });
 
     res.json({
       success: true,
-      message: 'Successfully followed user',
-      follow
+      message: 'Follow request sent',
+      followRequest
     });
   } catch (error) {
-    console.error('Error following user:', error);
-    res.status(500).json({ error: 'Failed to follow user' });
+    console.error('Error sending follow request:', error);
+    res.status(500).json({ error: 'Failed to send follow request' });
   }
 });
 

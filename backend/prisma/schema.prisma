@@ -51,6 +51,39 @@ model User {
   timezone    String?
   preferences Json? // Store user preferences as JSON object
   
+  // Settings fields
+  // Privacy settings
+  profileVisibility    String? @default("public") // public, friends, private
+  locationSharing      String? @default("friends") // everyone, friends, nobody
+  pulseHistoryVisibility String? @default("friends") // public, friends, only_me
+  friendRequestsFrom   String? @default("everyone") // everyone, friends_of_friends, nobody
+  showOnlineStatus     Boolean @default(true)
+  allowMessageRequests Boolean @default(true)
+  showInSearch         Boolean @default(true)
+  
+  // Notification settings
+  pushNotificationsEnabled Boolean @default(true)
+  notifyNewPulsesNearby    Boolean @default(true)
+  notifyPulseInvitations   Boolean @default(true)
+  notifyPulseUpdates       Boolean @default(true)
+  notifyNewMessages        Boolean @default(true)
+  notifyNewFollowers       Boolean @default(true)
+  notifyFriendRequests     Boolean @default(true)
+  notifyPostReactions      Boolean @default(true)
+  
+  // Appearance settings
+  themePreference      String? @default("system") // system, light, dark
+  languagePreference   String? @default("en_US")
+  textSizeScale        Float?  @default(1.0)
+  
+  // Other settings
+  hapticFeedbackEnabled Boolean @default(true)
+  activityStatusVisible Boolean @default(true)
+  
+  // Blocked users
+  blockedUsers    BlockedUser[] @relation("BlockingUser")
+  blockedByUsers  BlockedUser[] @relation("BlockedUser")
+  
   // Social features
   followers   Follow[] @relation("UserFollowers")
   following   Follow[] @relation("UserFollowing")
@@ -69,12 +102,17 @@ model User {
   conversations Conversation[] @relation("ConversationParticipants")
   directConversations DirectConversation[] @relation("DirectConversationParticipants")
   pulseConversations  PulseConversation[]  @relation("PulseConversationParticipants")
+  createdGroupConversations GroupConversation[] @relation("GroupConversationCreator")
+  groupConversations GroupConversation[] @relation("GroupConversationParticipants")
   sentMessages  Message[]
   messageReactions MessageReaction[]
 
   // Invitations (group chat / pulse invites)
   sentInvitations     ConversationInvitation[] @relation("ConversationInviter")
   receivedInvitations ConversationInvitation[] @relation("ConversationInvitee")
+
+  // Highlights (collections of past pulses)
+  highlights          Highlight[] @relation("UserHighlights")
 
   @@index([locationId])
 }
@@ -117,6 +155,9 @@ model Pulse {
   conversations Conversation[]
   // New back relation to PulseConversation
   pulseConversations PulseConversation[]
+
+  // Highlights - video moments captured during this pulse
+  highlights Highlight[]
 
   @@index([activeFrom])
   @@index([activeUntil])
@@ -297,6 +338,24 @@ model PulseConversation {
   @@index([updatedAt])
 }
 
+// Normal group chat conversations (not tied to pulses)
+model GroupConversation {
+  id              String   @id @default(cuid())
+  name            String
+  description     String?
+  avatarUrl       String?
+  creatorId       String
+  creator         User     @relation("GroupConversationCreator", fields: [creatorId], references: [id], onDelete: Cascade)
+  participants    User[]   @relation("GroupConversationParticipants")
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  lastMessageText String?
+  lastSenderId    String?
+
+  @@index([updatedAt])
+  @@index([creatorId])
+}
+
 model Message {
   id             String   @id @default(cuid())
   conversationId String
@@ -305,13 +364,19 @@ model Message {
   imageUrl       String?
   videoUrl       String?
   createdAt      DateTime @default(now())
+  deliveredTo    String[] @default([]) // Array of user IDs who have received the message
+  readBy         String[] @default([]) // Array of user IDs who have read the message
+  repliedToId    String?  // ID of the message being replied to
 
   conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
   sender         User         @relation(fields: [senderId], references: [id], onDelete: Cascade)
   reactions      MessageReaction[]
+  repliedTo      Message?     @relation("MessageReplies", fields: [repliedToId], references: [id], onDelete: SetNull)
+  replies        Message[]    @relation("MessageReplies")
 
   @@index([conversationId])
   @@index([senderId])
+  @@index([repliedToId])
 }
 
 model MessageReaction {
@@ -330,24 +395,72 @@ model MessageReaction {
   @@index([emoji])
 }
 
-// Conversation invitation (for inviting users to group chats / pulse chats)
+// Unified invitation model for all conversation types (group chats, pulse chats, direct messages)
 model ConversationInvitation {
   id             String        @id @default(cuid())
-  conversationId String
-  conversation   Conversation  @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  conversationId String?       // Optional - not needed for FOLLOW_REQUEST
+  conversation   Conversation? @relation(fields: [conversationId], references: [id], onDelete: Cascade)
   inviterId      String
   inviter        User          @relation("ConversationInviter", fields: [inviterId], references: [id], onDelete: Cascade)
   inviteeId      String
   invitee        User          @relation("ConversationInvitee", fields: [inviteeId], references: [id], onDelete: Cascade)
   status         String        @default("PENDING") // PENDING, ACCEPTED, DECLINED, REVOKED
+  invitationType String        @default("GROUP_CHAT") // GROUP_CHAT, PULSE_CHAT, DIRECT_MESSAGE, FOLLOW_REQUEST
   createdAt      DateTime      @default(now())
   respondedAt    DateTime?
 
-  @@unique([conversationId, inviteeId])
   @@index([inviteeId])
   @@index([conversationId])
   @@index([status])
+  @@index([invitationType])
+  @@index([inviterId, inviteeId, invitationType]) // Composite index for follow request lookups
 }
 
-// New: Invitations targeting PulseConversation specifically
-// Removed pending dedicated group invitation model for now to avoid breaking existing flows.
+// Unified invitation system - supports group chats, pulse chats, direct messages, and follow requests
+// invitationType helps frontend display appropriate UI and context for each type
+// For FOLLOW_REQUEST: conversationId is null, invitation represents a follow request between users
+
+// Blocked users - for privacy and safety
+model BlockedUser {
+  id            String   @id @default(cuid())
+  blockingUserId String
+  blockedUserId  String
+  reason         String?
+  createdAt      DateTime @default(now())
+
+  blockingUser User @relation("BlockingUser", fields: [blockingUserId], references: [id], onDelete: Cascade)
+  blockedUser  User @relation("BlockedUser", fields: [blockedUserId], references: [id], onDelete: Cascade)
+
+  @@unique([blockingUserId, blockedUserId])
+  @@index([blockingUserId])
+  @@index([blockedUserId])
+}
+
+// Highlights - short videos captured during pulses (like Instagram Stories/Highlights)
+// Users capture video moments during pulse events that can be saved as highlights
+model Highlight {
+  id           String   @id @default(cuid())
+  videoUrl     String   // URL of the video file
+  thumbnailUrl String?  // Thumbnail/preview image
+  duration     Int      // Video duration in seconds
+  caption      String?  // Optional text caption for the video
+  
+  // Link to the pulse where this highlight was captured
+  pulseId      String
+  pulse        Pulse    @relation(fields: [pulseId], references: [id], onDelete: Cascade)
+  
+  // Owner of the highlight
+  userId       String
+  user         User     @relation("UserHighlights", fields: [userId], references: [id], onDelete: Cascade)
+  
+  // Visibility settings
+  isPublic     Boolean  @default(true)
+  viewCount    Int      @default(0)
+  
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  
+  @@index([userId])
+  @@index([pulseId])
+  @@index([createdAt])
+}

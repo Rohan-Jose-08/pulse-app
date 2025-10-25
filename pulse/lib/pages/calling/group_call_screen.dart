@@ -16,6 +16,8 @@ class GroupCallScreen extends StatefulWidget {
 class _GroupCallScreenState extends State<GroupCallScreen> {
   final svc = GroupCallService.instance;
   List<String> _participants = [];
+  bool _micOn = true;
+  bool _camOn = true;
 
   @override
   void initState() {
@@ -66,6 +68,73 @@ class _GroupCallScreenState extends State<GroupCallScreen> {
               ],
             ),
           ),
+          // Call controls
+          Container(
+            padding: const EdgeInsets.all(16),
+            color: t.secondaryBackground.withOpacity(0.9),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+              children: [
+                _controlButton(
+                  icon: _micOn ? Icons.mic : Icons.mic_off,
+                  label: _micOn ? 'Mute' : 'Unmute',
+                  color: _micOn ? Colors.white : Colors.red,
+                  onTap: () {
+                    final stream = svc.localRenderer.srcObject;
+                    if (stream != null) {
+                      for (final t in stream.getAudioTracks()) {
+                        t.enabled = !_micOn;
+                      }
+                    }
+                    setState(() => _micOn = !_micOn);
+                  },
+                ),
+                if (widget.isVideo)
+                  _controlButton(
+                    icon: _camOn ? Icons.videocam : Icons.videocam_off,
+                    label: _camOn ? 'Camera' : 'Camera Off',
+                    color: _camOn ? Colors.white : Colors.red,
+                    onTap: () {
+                      final stream = svc.localRenderer.srcObject;
+                      if (stream != null) {
+                        for (final t in stream.getVideoTracks()) {
+                          t.enabled = !_camOn;
+                        }
+                      }
+                      setState(() => _camOn = !_camOn);
+                    },
+                  ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _controlButton({
+    required IconData icon,
+    required String label,
+    required Color color,
+    required VoidCallback onTap,
+  }) {
+    return InkWell(
+      onTap: onTap,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            width: 56,
+            height: 56,
+            decoration: BoxDecoration(
+              color: color.withOpacity(0.2),
+              shape: BoxShape.circle,
+              border: Border.all(color: color, width: 2),
+            ),
+            child: Icon(icon, color: color, size: 24),
+          ),
+          const SizedBox(height: 4),
+          Text(label, style: TextStyle(color: color, fontSize: 12)),
         ],
       ),
     );

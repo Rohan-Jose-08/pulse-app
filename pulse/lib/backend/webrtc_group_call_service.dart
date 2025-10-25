@@ -15,6 +15,7 @@ class GroupCallService {
 
   final _participantsCtl = StreamController<List<String>>.broadcast();
   Stream<List<String>> get participantsStream => _participantsCtl.stream;
+  List<String> _participants = []; // Track participants locally
 
   String? _conversationId;
   bool _isVideo = true;
@@ -161,11 +162,15 @@ class GroupCallService {
       }
       _localRenderer.srcObject = null;
     } catch (_) {}
+    // Clear participants list
+    _participants.clear();
+    _participantsCtl.add([]);
   }
 
   // Handle participants list sent upon join
   void handleParticipants(List<dynamic> userIds) async {
-    _participantsCtl.add(userIds.cast<String>());
+    _participants = userIds.cast<String>();
+    _participantsCtl.add(_participants);
     // Create offers to each participant
     final cid = _conversationId;
     if (cid == null) return;
@@ -235,6 +240,57 @@ class GroupCallService {
       // Clean up on remote end or empty room
       await _teardown();
       await _setState(GroupCallState.ended);
+    });
+    // Handle new participant joining the call
+    sock.groupCallParticipantJoined.listen((m) async {
+      final cid = m['conversationId']?.toString();
+      if (cid == null || cid != _conversationId) return;
+      final userId = m['userId']?.toString();
+      if (userId == null) return;
+      // Update participants list
+      if (!_participants.contains(userId)) {
+        _participants.add(userId);
+        _participantsCtl.add(List<String>.from(_participants));
+      }
+      // Create a peer connection and send an offer to the new participant
+      if (!_pcs.containsKey(userId)) {
+        final pc = await _createPcFor(userId);
+        final offer = await pc.createOffer({
+          'offerToReceiveAudio': 1,
+          'offerToReceiveVideo': _isVideo ? 1 : 0
+        });
+        await pc.setLocalDescription(offer);
+        SocketService.instance.sendGroupSignal(
+          conversationId: _conversationId!,
+          toUserId: userId,
+          kind: 'offer',
+          data: offer.toMap(),
+        );
+      }
+    });
+    // Handle participant leaving the call
+    sock.groupCallParticipantLeft.listen((m) async {
+      final cid = m['conversationId']?.toString();
+      if (cid == null || cid != _conversationId) return;
+      final userId = m['userId']?.toString();
+      if (userId == null) return;
+      // Remove from participants list
+      _participants.remove(userId);
+      _participantsCtl.add(List<String>.from(_participants));
+      // Clean up peer connection for this user
+      final pc = _pcs.remove(userId);
+      if (pc != null) {
+        try {
+          await pc.close();
+        } catch (_) {}
+      }
+      // Clean up remote renderer
+      final renderer = _remoteRenderers.remove(userId);
+      if (renderer != null) {
+        try {
+          await renderer.dispose();
+        } catch (_) {}
+      }
     });
   }
 }

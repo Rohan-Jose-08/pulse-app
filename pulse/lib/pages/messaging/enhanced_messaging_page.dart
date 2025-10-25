@@ -9,7 +9,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:image_picker/image_picker.dart';
 import '../../auth/firebase_auth/auth_util.dart';
 import '../../flutter_flow/flutter_flow_theme.dart';
-// Removed direct ApiService import (handled inside transport manager)
+import '../../backend/api_service.dart';
 import '../../backend/chat_transport.dart';
 import '../../backend/webrtc_call_service.dart';
 import '../calling/call_screen.dart';
@@ -18,6 +18,35 @@ import 'package:permission_handler/permission_handler.dart';
 import '../../backend/socket_service.dart';
 
 // ================= Models =================
+class RepliedMessage {
+  RepliedMessage({
+    required this.id,
+    required this.senderId,
+    required this.senderName,
+    this.text,
+    this.imageUrl,
+    this.videoUrl,
+  });
+  final String id;
+  final String senderId;
+  final String senderName;
+  final String? text;
+  final String? imageUrl;
+  final String? videoUrl;
+
+  bool get isImage => imageUrl != null && imageUrl!.isNotEmpty;
+  bool get isVideo => videoUrl != null && videoUrl!.isNotEmpty;
+
+  factory RepliedMessage.fromJson(Map<String, dynamic> json) => RepliedMessage(
+        id: json['id'] as String,
+        senderId: json['senderId'] as String,
+        senderName: json['senderName'] as String? ?? 'Unknown',
+        text: json['text'] as String?,
+        imageUrl: json['imageUrl'] as String?,
+        videoUrl: json['videoUrl'] as String?,
+      );
+}
+
 class EnhancedMessage {
   EnhancedMessage({
     required this.id,
@@ -33,6 +62,7 @@ class EnhancedMessage {
     this.linkPreview,
     this.location,
     this.readBy,
+    this.deliveredTo,
     this.repliedTo,
     this.editedAt,
   });
@@ -49,7 +79,8 @@ class EnhancedMessage {
   final LinkPreview? linkPreview;
   final LocationData? location;
   final List<String>? readBy;
-  final String? repliedTo;
+  final List<String>? deliveredTo;
+  final RepliedMessage? repliedTo;
   final DateTime? editedAt;
   bool get isImage => imageUrl != null && imageUrl!.isNotEmpty;
   bool get isVideo => videoUrl != null && videoUrl!.isNotEmpty;
@@ -82,7 +113,12 @@ class EnhancedMessage {
             : null,
         readBy:
             data['readBy'] != null ? List<String>.from(data['readBy']) : null,
-        repliedTo: data['repliedTo'] as String?,
+        deliveredTo: data['deliveredTo'] != null
+            ? List<String>.from(data['deliveredTo'])
+            : null,
+        repliedTo: data['repliedTo'] != null
+            ? RepliedMessage.fromJson(data['repliedTo'] as Map<String, dynamic>)
+            : null,
         editedAt: data['editedAt'] != null
             ? DateTime.tryParse(data['editedAt'].toString())
             : null,
@@ -167,10 +203,48 @@ final _enhancedMessagesStreamProvider = StreamProvider.autoDispose
     }
   });
 
+  // Listen to message status updates (delivered/read)
+  final statusSub = SocketService.instance.messageStatusUpdates.listen((data) {
+    if (data['conversationId'] == cid) {
+      final messageId = data['messageId']?.toString();
+      if (messageId != null && byId.containsKey(messageId)) {
+        final existing = byId[messageId]!;
+        final updatedReadBy = data['readBy'] != null
+            ? List<String>.from(data['readBy'])
+            : existing.readBy;
+        final updatedDeliveredTo = data['deliveredTo'] != null
+            ? List<String>.from(data['deliveredTo'])
+            : existing.deliveredTo;
+
+        // Create updated message with new status
+        byId[messageId] = EnhancedMessage(
+          id: existing.id,
+          senderId: existing.senderId,
+          timestamp: existing.timestamp,
+          text: existing.text,
+          imageUrl: existing.imageUrl,
+          videoUrl: existing.videoUrl,
+          reactions: existing.reactions,
+          senderName: existing.senderName,
+          senderPhotoUrl: existing.senderPhotoUrl,
+          isSystemMessage: existing.isSystemMessage,
+          linkPreview: existing.linkPreview,
+          location: existing.location,
+          readBy: updatedReadBy,
+          deliveredTo: updatedDeliveredTo,
+          repliedTo: existing.repliedTo,
+          editedAt: existing.editedAt,
+        );
+        _publish();
+      }
+    }
+  });
+
   hydrate();
 
   ref.onDispose(() {
     sub.cancel();
+    statusSub.cancel();
     controller.close();
   });
   return controller.stream;
@@ -243,7 +317,13 @@ class _EnhancedMessagingPageState extends ConsumerState<EnhancedMessagingPage>
   final DateTime _openedAt = DateTime.now();
   final Set<String> _pinned = {};
   String? _firstUnreadId;
+  final Set<String> _markedAsRead =
+      {}; // Track which messages we've already marked as read
   Map<String, Map<String, dynamic>>? _groupMemberIndex; // userId -> member map
+
+  // Activity status tracking
+  String? _recipientStatus;
+  StreamSubscription? _statusSubscription;
 
   void _indexGroupMembers() {
     final members = widget.groupMembers;
@@ -310,6 +390,24 @@ class _EnhancedMessagingPageState extends ConsumerState<EnhancedMessagingPage>
     ChatTransportManager.instance.ensureConnected();
     ChatTransportManager.instance.active.joinConversation(widget.chatId);
 
+    // Load recipient's activity status
+    if (!widget.isGroupChat) {
+      _loadRecipientStatus();
+      _listenToStatusChanges();
+    }
+
+    // Listen for message status updates (delivered/read receipts)
+    SocketService.instance.messageStatusUpdates.listen((data) {
+      if (!mounted) return;
+      if (data['conversationId']?.toString() != widget.chatId) return;
+
+      final messageId = data['messageId']?.toString();
+      if (messageId == null) return;
+
+      // The status update is handled by the stream provider automatically
+      // since it will receive the updated message from the backend
+    });
+
     // Listen for group call start/stop and show a join banner (opt-in)
     if (widget.isGroupChat) {
       SocketService.instance.groupCallStarted.listen((m) {
@@ -352,6 +450,7 @@ class _EnhancedMessagingPageState extends ConsumerState<EnhancedMessagingPage>
   @override
   void dispose() {
     _typingDebounce?.cancel();
+    _statusSubscription?.cancel();
     _text.removeListener(_handleTyping);
     _text.dispose();
     _focus.dispose();
@@ -360,6 +459,37 @@ class _EnhancedMessagingPageState extends ConsumerState<EnhancedMessagingPage>
     _setTyping(false);
     ChatTransportManager.instance.active.leaveConversation(widget.chatId);
     super.dispose();
+  }
+
+  /// Load recipient's activity status
+  Future<void> _loadRecipientStatus() async {
+    if (widget.recipientUserId.isEmpty) return;
+
+    final statuses =
+        await ApiService.instance.getActivityStatuses([widget.recipientUserId]);
+    if (statuses != null && mounted) {
+      final statusData = statuses[widget.recipientUserId];
+      if (statusData != null) {
+        setState(() {
+          _recipientStatus = statusData['status'];
+        });
+      }
+    }
+  }
+
+  /// Listen for real-time activity status updates
+  void _listenToStatusChanges() {
+    _statusSubscription =
+        SocketService.instance.userStatusChanged.listen((data) {
+      final userId = data['userId'] as String?;
+      final status = data['status'] as String?;
+
+      if (userId == widget.recipientUserId && status != null && mounted) {
+        setState(() {
+          _recipientStatus = status;
+        });
+      }
+    });
   }
 
   void _handleScroll() {
@@ -374,6 +504,28 @@ class _EnhancedMessagingPageState extends ConsumerState<EnhancedMessagingPage>
         }
       });
     }
+
+    // Mark visible messages as read
+    _markVisibleMessagesAsRead();
+  }
+
+  void _markVisibleMessagesAsRead() {
+    final messagesAsync =
+        ref.read(_enhancedMessagesStreamProvider(widget.chatId));
+    messagesAsync.whenData((messages) {
+      for (final message in messages) {
+        // Skip if it's my own message or already marked
+        if (message.senderId == currentUserUid) continue;
+        if (_markedAsRead.contains(message.id)) continue;
+
+        // Mark as read
+        _markedAsRead.add(message.id);
+        SocketService.instance.markMessageRead(
+          conversationId: widget.chatId,
+          messageId: message.id,
+        );
+      }
+    });
   }
 
   void _handleTyping() {
@@ -395,8 +547,11 @@ class _EnhancedMessagingPageState extends ConsumerState<EnhancedMessagingPage>
     setState(() => _isSending = true);
     try {
       HapticFeedback.lightImpact();
-      ChatTransportManager.instance.active
-          .sendMessage(conversationId: widget.chatId, text: txt);
+      ChatTransportManager.instance.active.sendMessage(
+        conversationId: widget.chatId,
+        text: txt,
+        repliedToId: _reply?.id,
+      );
       _text.clear();
       _clearReply();
       await _scrollToBottom();
@@ -557,7 +712,11 @@ class _EnhancedMessagingPageState extends ConsumerState<EnhancedMessagingPage>
 
   PreferredSizeWidget _appBar(
       FlutterFlowTheme t, Map<String, dynamic> typing, Set<String> online) {
-    final isOnline = online.contains(widget.recipientUserId);
+    // Use our tracked status if available, otherwise fall back to online set
+    final isOnline = _recipientStatus == 'online' ||
+        (_recipientStatus == null && online.contains(widget.recipientUserId));
+    final isAway = _recipientStatus == 'away';
+
     return AppBar(
       elevation: .5,
       backgroundColor: t.secondaryBackground,
@@ -582,7 +741,7 @@ class _EnhancedMessagingPageState extends ConsumerState<EnhancedMessagingPage>
                     ? Icon(Icons.person, color: t.secondaryText, size: 20)
                     : null),
           ),
-          if (!widget.isGroupChat && isOnline)
+          if (!widget.isGroupChat && (isOnline || isAway))
             Positioned(
               bottom: 0,
               right: 0,
@@ -590,7 +749,7 @@ class _EnhancedMessagingPageState extends ConsumerState<EnhancedMessagingPage>
                 width: 12,
                 height: 12,
                 decoration: BoxDecoration(
-                  color: Colors.green,
+                  color: isOnline ? Colors.green : Colors.orange,
                   shape: BoxShape.circle,
                   border: Border.all(color: t.secondaryBackground, width: 2),
                 ),
@@ -1100,7 +1259,10 @@ class _EnhancedMessagingPageState extends ConsumerState<EnhancedMessagingPage>
             ? '📷 Image'
             : _reply!.isVideo
                 ? '🎥 Video'
-                : 'Message');
+                : _reply!.isLocation
+                    ? '📍 Location'
+                    : 'Message');
+    final replyToName = _reply!.senderName ?? 'Unknown';
     return Container(
       margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
       padding: const EdgeInsets.all(12),
@@ -1115,7 +1277,7 @@ class _EnhancedMessagingPageState extends ConsumerState<EnhancedMessagingPage>
             crossAxisAlignment: CrossAxisAlignment.start,
             mainAxisSize: MainAxisSize.min,
             children: [
-              Text('Replying to ${_reply!.senderName ?? 'Unknown'}',
+              Text('Replying to $replyToName',
                   style: t.bodySmall
                       .override(color: t.primary, fontWeight: FontWeight.w500)),
               const SizedBox(height: 2),
@@ -1511,7 +1673,10 @@ class _EnhancedMessageBubbleState extends State<_EnhancedMessageBubble>
             direction: widget.isMine
                 ? DismissDirection.startToEnd
                 : DismissDirection.endToStart,
-            onDismissed: (_) => widget.onReply(),
+            confirmDismiss: (_) async {
+              widget.onReply();
+              return false; // Prevent actual dismissal
+            },
             background: Align(
                 alignment: widget.isMine
                     ? Alignment.centerLeft
@@ -1565,10 +1730,35 @@ class _EnhancedMessageBubbleState extends State<_EnhancedMessageBubble>
                                                 ? Colors.white
                                                 : widget.theme.primary,
                                             width: 3))),
-                                child: Text('Replying to message',
-                                    style: widget.theme.bodySmall.override(
-                                        color: textColor.withOpacity(.7),
-                                        fontStyle: FontStyle.italic))))
+                                child: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      Text(widget.message.repliedTo!.senderName,
+                                          style: widget.theme.bodySmall
+                                              .override(
+                                                  color: textColor,
+                                                  fontWeight: FontWeight.w600,
+                                                  fontSize: 12)),
+                                      const SizedBox(height: 2),
+                                      Text(
+                                          widget.message.repliedTo!.text ??
+                                              (widget.message.repliedTo!.isImage
+                                                  ? '📷 Photo'
+                                                  : widget.message.repliedTo!
+                                                          .isVideo
+                                                      ? '🎥 Video'
+                                                      : 'Media'),
+                                          style: widget.theme.bodySmall
+                                              .override(
+                                                  color:
+                                                      textColor.withOpacity(.7),
+                                                  fontStyle: FontStyle.italic,
+                                                  fontSize: 11),
+                                          maxLines: 2,
+                                          overflow: TextOverflow.ellipsis)
+                                    ])))
                       ],
                       if (widget.message.isImage) ...[
                         ClipRRect(
@@ -1797,12 +1987,27 @@ class _EnhancedMessageBubbleState extends State<_EnhancedMessageBubble>
           ],
           if (widget.isMine) ...[
             const SizedBox(width: 4),
-            Icon(Icons.done_all,
-                size: 14,
-                color: widget.message.readBy != null &&
-                        widget.message.readBy!.length > 1
-                    ? widget.theme.primary
-                    : widget.theme.secondaryText)
+            // Show delivered/read status
+            (() {
+              final readBy = widget.message.readBy ?? [];
+              final deliveredTo = widget.message.deliveredTo ?? [];
+
+              // If anyone has read it (excluding sender), show blue double check
+              if (readBy.isNotEmpty) {
+                return Icon(Icons.done_all,
+                    size: 14, color: widget.theme.primary);
+              }
+              // If delivered to anyone (excluding sender), show gray double check
+              else if (deliveredTo.isNotEmpty) {
+                return Icon(Icons.done_all,
+                    size: 14, color: widget.theme.secondaryText);
+              }
+              // Otherwise show single check (sent but not delivered)
+              else {
+                return Icon(Icons.check,
+                    size: 14, color: widget.theme.secondaryText);
+              }
+            })()
           ]
         ])
       ]),

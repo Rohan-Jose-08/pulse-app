@@ -6,9 +6,15 @@ import profileRoute from './routes/profile';
 import { PrismaClient } from '@prisma/client';
 import postsRoute from './routes/posts';
 import messagesRoute from './routes/messages';
+import pulseInvitationsRoute from './routes/pulse_invitations';
+import invitationsRoute from './routes/invitations';
+import settingsRoute from './routes/settings';
+import activityRoute from './routes/activity';
+import highlightsRoute from './routes/highlights';
 import admin from './firebase';
 import http from 'http';
-import { userSockets, getIo, setIo } from './realtime';
+import { userSockets, getIo, setIo, setUserOnline, setUserOffline, getUserActivity, getOnlineUsers } from './realtime';
+import { authenticateUser } from './middleware/auth';
 // Geolocation service (coordinate + reverse geocode utilities)
 import { haversineKm, reverseGeocode } from './services/geolocation';
 import { placesAutocomplete, placeDetails, parseLocationFromPlace } from './services/googlePlaces';
@@ -34,39 +40,6 @@ declare global {
   }
 }
 
-// Middleware to authenticate users
-const authenticateUser = async (req: express.Request, res: express.Response, next: express.NextFunction) => {
-  const authHeader = req.headers.authorization;
-  if (!authHeader?.startsWith('Bearer ')) {
-    return res.status(401).send('Missing or invalid token');
-  }
-
-  const idToken = authHeader.split(' ')[1];
-
-  try {
-    const decoded = await admin.auth().verifyIdToken(idToken);
-    const { uid } = decoded;
-    
-    // Check if user exists in our database
-    const user = await prisma.user.findUnique({ where: { firebaseUid: uid } });
-    if (!user) {
-      return res.status(401).json({ error: 'User not found' });
-    }
-    
-    console.log('Auth middleware - User found:', {
-      firebaseUid: uid,
-      userId: user.id,
-      userEmail: user.email
-    });
-    
-    req.user = user;
-    next();
-  } catch (err) {
-    console.error(err);
-    res.status(401).json({ error: 'Unauthorized' });
-  }
-};
-
 // Mount the auth routes directly without applying global authentication middleware
 app.use('/api/auth', authRoute);
 
@@ -78,6 +51,21 @@ app.use('/api/posts', postsRoute);
 
 // Messaging routes (REST helpers for conversations/messages)
 app.use('/api', messagesRoute);
+
+// Pulse invitations routes (legacy, specific to pulses)
+app.use('/api/pulses', pulseInvitationsRoute);
+
+// Unified invitations routes (all invitation types)
+app.use('/api/invitations', invitationsRoute);
+
+// Settings routes
+app.use('/api/settings', settingsRoute);
+
+// Activity status routes
+app.use('/api/activity', activityRoute);
+
+// Highlights routes
+app.use('/api/highlights', highlightsRoute);
 
 // --- Notifications REST endpoints ---
 // List notifications for the authenticated user (paged)
@@ -359,6 +347,7 @@ app.get('/api/pulses/nearby', async (req, res) => {
     const latDelta = radius / 111; const lngDelta = radius / (111 * Math.cos(latitude * Math.PI/180));
     const minLat = latitude - latDelta; const maxLat = latitude + latDelta;
     const minLng = longitude - lngDelta; const maxLng = longitude + lngDelta;
+    
     const pulses = await prisma.pulse.findMany({
       where: { isPublic: true, location: { is: { latitude: { gte: minLat, lte: maxLat }, longitude: { gte: minLng, lte: maxLng } } } },
       include: { author: { select: { id: true, displayName: true, email: true, profileImageUrl: true } }, participants: { select: { id: true, displayName: true, email: true, profileImageUrl: true } }, location: true },
@@ -392,7 +381,10 @@ app.get('/api/map/overview', async (req, res) => {
     const promises: Promise<any>[] = [];
     if (wantEvents) {
       const p = prisma.pulse.findMany({
-        where: { isPublic: true, location: { is: { latitude: { gte: minLat, lte: maxLat }, longitude: { gte: minLng, lte: maxLng } } } },
+        where: { 
+          isPublic: true, 
+          location: { is: { latitude: { gte: minLat, lte: maxLat }, longitude: { gte: minLng, lte: maxLng } } }
+        },
         include: { author: { select: { id: true, displayName: true, profileImageUrl: true } }, participants: { select: { id: true } }, location: true },
         take: 500
       }).then(list => list.map(p => {
@@ -449,6 +441,7 @@ app.get('/api/pulses/public', async (req, res) => {
   try {
     const limitRaw = String(req.query.limit ?? '50');
     const limit = Math.min(Math.max(parseInt(limitRaw, 10) || 50, 1), 200);
+    
     const pulses = await prisma.pulse.findMany({
       where: { isPublic: true, location: { isNot: null } },
       include: {
@@ -1613,6 +1606,9 @@ io.on('connection', (socket: any) => {
   userSockets.get(user.id)!.add(socket.id);
   try { console.log('[socket] connected', { userId: user.id, socketId: socket.id, socketsForUser: Array.from(userSockets.get(user.id) || []) }); } catch (_) {}
 
+  // Set user online and broadcast status
+  setUserOnline(user.id);
+
   socket.on('join:conversation', (conversationId: string) => {
     socket.join(`conversation:${conversationId}`);
     try { console.log('[socket] join:conversation', { userId: user.id, socketId: socket.id, conversationId }); } catch (_) {}
@@ -1622,9 +1618,9 @@ io.on('connection', (socket: any) => {
     socket.leave(`conversation:${conversationId}`);
   });
 
-  socket.on('message:send', async (payload: { conversationId: string; text?: string; imageUrl?: string; videoUrl?: string }) => {
+  socket.on('message:send', async (payload: { conversationId: string; text?: string; imageUrl?: string; videoUrl?: string; repliedToId?: string }) => {
     try {
-  let { conversationId, text, imageUrl, videoUrl } = payload;
+  let { conversationId, text, imageUrl, videoUrl, repliedToId } = payload;
       // Basic validation
       if (!conversationId || (!text && !imageUrl && !videoUrl)) {
         try { socket.emit('message:error', { conversationId: conversationId || null, reason: 'INVALID_PAYLOAD' }); } catch (_) {}
@@ -1682,6 +1678,26 @@ io.on('connection', (socket: any) => {
           }
           if (c) {
             conversation = c; conversationId = c.id;
+          }
+        }
+      }
+      if (!conversation) {
+        // 2b) GroupConversation id fallback
+        const gconv = await (prisma as any).groupConversation.findUnique({ where: { id: conversationId }, include: { participants: { select: { id: true } } } }).catch(() => null);
+        if (gconv) {
+          conversation = await (prisma as any).conversation.findUnique({ where: { id: conversationId }, include: { participants: true, pulse: { select: { id: true } } } });
+          if (!conversation) {
+            // create legacy conversation aligned to group id
+            conversation = await (prisma as any).conversation.create({
+              data: {
+                id: gconv.id,
+                isGroup: true,
+                participants: { connect: (gconv.participants as any[]).map((u: any) => ({ id: u.id })) },
+                name: gconv.name,
+                avatarUrl: gconv.avatarUrl ?? undefined,
+              },
+              include: { participants: true, pulse: { select: { id: true } } },
+            });
           }
         }
       }
@@ -1750,7 +1766,32 @@ io.on('connection', (socket: any) => {
           text: text ?? null,
           imageUrl: imageUrl ?? null,
           videoUrl: videoUrl ?? null,
+          repliedToId: repliedToId ?? null,
         },
+        include: {
+          sender: {
+            select: {
+              id: true,
+              displayName: true,
+              profileImageUrl: true,
+            }
+          },
+          repliedTo: {
+            select: {
+              id: true,
+              text: true,
+              imageUrl: true,
+              videoUrl: true,
+              senderId: true,
+              sender: {
+                select: {
+                  id: true,
+                  displayName: true,
+                }
+              }
+            }
+          }
+        }
       });
 
       // Ack to sender so client can confirm persistence
@@ -1785,38 +1826,66 @@ io.on('connection', (socket: any) => {
             lastSenderId: user.id,
           },
         }).catch(() => null);
+        await (prisma as any).groupConversation.update({
+          where: { id: conversationId },
+          data: {
+            updatedAt: new Date(),
+            lastMessageText: text ?? (videoUrl ? '[video]' : (imageUrl ? '[image]' : '')),
+            lastSenderId: user.id,
+          },
+        }).catch(() => null);
       } catch (_) { /* ignore */ }
 
       io.to(`conversation:${conversationId}`).emit('message:new', {
         id: msg.id,
         conversationId: msg.conversationId,
         senderId: msg.senderId,
+        senderName: (msg as any).sender?.displayName || null,
+        senderPhotoUrl: (msg as any).sender?.profileImageUrl || null,
         text: msg.text,
         imageUrl: msg.imageUrl,
         createdAt: msg.createdAt,
         videoUrl: msg.videoUrl,
+        deliveredTo: msg.deliveredTo || [],
+        readBy: msg.readBy || [],
+        repliedTo: (msg as any).repliedTo ? {
+          id: (msg as any).repliedTo.id,
+          text: (msg as any).repliedTo.text,
+          imageUrl: (msg as any).repliedTo.imageUrl,
+          videoUrl: (msg as any).repliedTo.videoUrl,
+          senderId: (msg as any).repliedTo.senderId,
+          senderName: (msg as any).repliedTo.sender?.displayName || 'Unknown',
+        } : null,
       });
       try { console.log('[socket] message:new emitted to room', { conversationId }); } catch (_) {}
 
-      // Also directly emit to participant sockets (safety net if a client didn't join the room)
-      try {
-        conversation.participants.forEach((p: any) => {
-          const sockets = userSockets.get(p.id);
-          if (!sockets) return;
-          sockets.forEach((sid: string) => io.to(sid).emit('message:new', {
-            id: msg.id,
-            conversationId: msg.conversationId,
-            senderId: msg.senderId,
-            text: msg.text,
-            imageUrl: msg.imageUrl,
-            createdAt: msg.createdAt,
-            videoUrl: msg.videoUrl,
-          }));
-        });
-        console.log('[socket] message:new emitted to direct sockets', { conversationId, recipients: conversation.participants.map((p: any) => p.id) });
-      } catch (_) {}
+      // Auto-mark as delivered for online participants
+      const onlineRecipients: string[] = [];
+      conversation.participants.forEach((p: any) => {
+        if (p.id !== user.id && userSockets.has(p.id)) {
+          onlineRecipients.push(p.id);
+        }
+      });
+      
+      if (onlineRecipients.length > 0) {
+        // Update message with deliveredTo for online users
+        await (prisma as any).message.update({
+          where: { id: msg.id },
+          data: {
+            deliveredTo: onlineRecipients,
+          },
+        }).catch((e: any) => console.error('Auto-deliver update failed:', e));
 
-      // Also notify participants who are not in the room
+        // Notify sender about delivery
+        socket.emit('message:status-update', {
+          conversationId,
+          messageId: msg.id,
+          deliveredTo: onlineRecipients,
+          status: 'delivered',
+        });
+      }
+
+      // Notify participants of conversation update (for message list refresh)
       conversation.participants.forEach((p: any) => {
         const sockets = userSockets.get(p.id);
         if (!sockets) return;
@@ -1882,6 +1951,121 @@ io.on('connection', (socket: any) => {
     }
   });
 
+  // Mark message as delivered
+  socket.on('message:delivered', async (payload: { conversationId: string; messageId: string }) => {
+    try {
+      const { conversationId, messageId } = payload;
+      if (!conversationId || !messageId) return;
+      
+      const conversation = await (prisma as any).conversation.findUnique({
+        where: { id: conversationId },
+        include: { participants: true },
+      });
+      if (!conversation) return;
+      const isParticipant = conversation.participants.some((p: any) => p.id === user.id);
+      if (!isParticipant) return;
+
+      const message = await (prisma as any).message.findUnique({
+        where: { id: messageId },
+      });
+      if (!message || message.conversationId !== conversationId) return;
+      
+      // Don't mark own messages as delivered by self
+      if (message.senderId === user.id) return;
+
+      // Add user to deliveredTo array if not already there
+      const deliveredTo = message.deliveredTo || [];
+      if (!deliveredTo.includes(user.id)) {
+        await (prisma as any).message.update({
+          where: { id: messageId },
+          data: {
+            deliveredTo: { push: user.id },
+          },
+        });
+
+        // Notify sender that message was delivered
+        const senderSockets = userSockets.get(message.senderId);
+        if (senderSockets) {
+          senderSockets.forEach((sid) => 
+            io.to(sid).emit('message:status-update', {
+              conversationId,
+              messageId,
+              deliveredTo: [...deliveredTo, user.id],
+              userId: user.id,
+              status: 'delivered',
+            })
+          );
+        }
+      }
+    } catch (e) {
+      console.error('message:delivered error', e);
+    }
+  });
+
+  // Mark message as read
+  socket.on('message:read', async (payload: { conversationId: string; messageId: string }) => {
+    try {
+      const { conversationId, messageId } = payload;
+      if (!conversationId || !messageId) return;
+      
+      const conversation = await (prisma as any).conversation.findUnique({
+        where: { id: conversationId },
+        include: { participants: true },
+      });
+      if (!conversation) return;
+      const isParticipant = conversation.participants.some((p: any) => p.id === user.id);
+      if (!isParticipant) return;
+
+      const message = await (prisma as any).message.findUnique({
+        where: { id: messageId },
+      });
+      if (!message || message.conversationId !== conversationId) return;
+      
+      // Don't mark own messages as read by self
+      if (message.senderId === user.id) return;
+
+      // Add user to readBy array if not already there
+      const readBy = message.readBy || [];
+      const deliveredTo = message.deliveredTo || [];
+      
+      if (!readBy.includes(user.id)) {
+        const updates: any = {
+          readBy: { push: user.id },
+        };
+        
+        // Also ensure user is in deliveredTo
+        if (!deliveredTo.includes(user.id)) {
+          updates.deliveredTo = { push: user.id };
+        }
+
+        await (prisma as any).message.update({
+          where: { id: messageId },
+          data: updates,
+        });
+
+        const newReadBy = [...readBy, user.id];
+        const newDeliveredTo = deliveredTo.includes(user.id) ? deliveredTo : [...deliveredTo, user.id];
+
+        // Notify sender that message was read
+        const senderSockets = userSockets.get(message.senderId);
+        if (senderSockets) {
+          senderSockets.forEach((sid) => 
+            io.to(sid).emit('message:status-update', {
+              conversationId,
+              messageId,
+              readBy: newReadBy,
+              deliveredTo: newDeliveredTo,
+              userId: user.id,
+              status: 'read',
+            })
+          );
+        }
+      }
+    } catch (e) {
+      console.error('message:read error', e);
+    }
+  });
+
   socket.on('typing', ({ conversationId, isTyping }: { conversationId: string; isTyping: boolean }) => {
     socket.to(`conversation:${conversationId}`).emit('typing', { conversationId, userId: user.id, isTyping });
   });
@@ -1890,7 +2074,11 @@ io.on('connection', (socket: any) => {
     const set = userSockets.get(user.id);
     if (set) {
       set.delete(socket.id);
-      if (set.size === 0) userSockets.delete(user.id);
+      if (set.size === 0) {
+        userSockets.delete(user.id);
+        // Set user offline when all their sockets disconnect
+        setUserOffline(user.id);
+      }
     }
 
     // Remove user from any active group calls and notify rooms

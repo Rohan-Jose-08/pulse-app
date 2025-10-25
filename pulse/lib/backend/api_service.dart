@@ -792,7 +792,11 @@ class ApiService {
       final pulse =
           await tryGet('pulse-conversations/$conversationId/messages');
       if (pulse != null) return pulse;
-      // 3) Legacy
+      // 3) Group conversation
+      final group =
+          await tryGet('group-conversations/$conversationId/messages');
+      if (group != null) return group;
+      // 4) Legacy
       final legacy = await tryGet('conversations/$conversationId/messages');
       if (legacy != null) return legacy;
     } catch (e) {
@@ -899,6 +903,248 @@ class ApiService {
     }
     return null;
   }
+
+  // ==================== GROUP CONVERSATIONS ====================
+
+  /// Create a new group conversation
+  /// POST /group-conversations
+  /// Body: { "name": "...", "description": "...", "avatarUrl": "...", "initialParticipantIds": [...] }
+  Future<Map<String, dynamic>?> createGroupConversation({
+    required String name,
+    String? description,
+    String? avatarUrl,
+    List<String>? initialParticipantIds,
+  }) async {
+    try {
+      final ensured = await ensureUserExists();
+      if (!ensured) return null;
+      final token = await _getAuthToken();
+      if (token == null) return null;
+
+      final url = '$_baseUrl/group-conversations';
+      final body = {
+        'name': name,
+        if (description != null) 'description': description,
+        if (avatarUrl != null) 'avatarUrl': avatarUrl,
+        if (initialParticipantIds != null && initialParticipantIds.isNotEmpty)
+          'initialParticipantIds': initialParticipantIds,
+      };
+
+      final response = await _client.post(
+        Uri.parse(url),
+        headers: _getHeaders(token),
+        body: jsonEncode(body),
+      );
+
+      if (response.statusCode >= 200 && response.statusCode < 300) {
+        final data = jsonDecode(response.body);
+        if (data is Map<String, dynamic>) return data;
+      } else {
+        print(
+            'createGroupConversation failed: ${response.statusCode} - ${response.body}');
+      }
+    } catch (e) {
+      print('Error createGroupConversation: $e');
+    }
+    return null;
+  }
+
+  /// Get a specific group conversation by ID
+  /// GET /group-conversations/:id
+  Future<Map<String, dynamic>?> getGroupConversation(String groupId) async {
+    try {
+      final ensured = await ensureUserExists();
+      if (!ensured) return null;
+      final token = await _getAuthToken();
+      if (token == null) return null;
+
+      final url = '$_baseUrl/group-conversations/$groupId';
+      final response = await _client.get(
+        Uri.parse(url),
+        headers: _getHeaders(token),
+      );
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        if (data is Map<String, dynamic>) return data;
+      } else {
+        print(
+            'getGroupConversation failed: ${response.statusCode} - ${response.body}');
+      }
+    } catch (e) {
+      print('Error getGroupConversation: $e');
+    }
+    return null;
+  }
+
+  /// List all group conversations for the current user
+  /// GET /group-conversations
+  Future<List<Map<String, dynamic>>?> listGroupConversations() async {
+    try {
+      final ensured = await ensureUserExists();
+      if (!ensured) return null;
+      final token = await _getAuthToken();
+      if (token == null) return null;
+
+      final url = '$_baseUrl/group-conversations';
+      final response = await _client.get(
+        Uri.parse(url),
+        headers: _getHeaders(token),
+      );
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        if (data is List) {
+          return data.map((e) => e as Map<String, dynamic>).toList();
+        }
+      } else {
+        print(
+            'listGroupConversations failed: ${response.statusCode} - ${response.body}');
+      }
+    } catch (e) {
+      print('Error listGroupConversations: $e');
+    }
+    return null;
+  }
+
+  /// Invite members to a group conversation
+  /// POST /group-conversations/:id/invite
+  /// Body: { "userIds": [...] }
+  Future<Map<String, dynamic>?> inviteToGroupConversation(
+      String groupId, List<String> userIds) async {
+    if (userIds.isEmpty) return null;
+    try {
+      final ensured = await ensureUserExists();
+      if (!ensured) return null;
+      final token = await _getAuthToken();
+      if (token == null) return null;
+
+      final url = '$_baseUrl/group-conversations/$groupId/invite';
+      final response = await _client.post(
+        Uri.parse(url),
+        headers: _getHeaders(token),
+        body: jsonEncode({'userIds': userIds}),
+      );
+
+      if (response.statusCode >= 200 && response.statusCode < 300) {
+        final data = jsonDecode(response.body);
+        if (data is Map<String, dynamic>) return data;
+        return {'status': 'ok'};
+      } else {
+        print(
+            'inviteToGroupConversation failed: ${response.statusCode} - ${response.body}');
+      }
+    } catch (e) {
+      print('Error inviteToGroupConversation: $e');
+    }
+    return null;
+  }
+
+  /// Update group conversation settings (name, description, avatar)
+  /// PATCH /group-conversations/:id
+  /// Body: { "name": "...", "description": "...", "avatarUrl": "..." }
+  Future<Map<String, dynamic>?> updateGroupConversation(
+    String groupId, {
+    String? name,
+    String? description,
+    String? avatarUrl,
+  }) async {
+    try {
+      final ensured = await ensureUserExists();
+      if (!ensured) return null;
+      final token = await _getAuthToken();
+      if (token == null) return null;
+
+      final url = '$_baseUrl/group-conversations/$groupId';
+      final body = <String, dynamic>{};
+      if (name != null) body['name'] = name;
+      if (description != null) body['description'] = description;
+      if (avatarUrl != null) body['avatarUrl'] = avatarUrl;
+
+      if (body.isEmpty) return null;
+
+      final response = await _client.patch(
+        Uri.parse(url),
+        headers: _getHeaders(token),
+        body: jsonEncode(body),
+      );
+
+      if (response.statusCode >= 200 && response.statusCode < 300) {
+        final data = jsonDecode(response.body);
+        if (data is Map<String, dynamic>) return data;
+      } else {
+        print(
+            'updateGroupConversation failed: ${response.statusCode} - ${response.body}');
+      }
+    } catch (e) {
+      print('Error updateGroupConversation: $e');
+    }
+    return null;
+  }
+
+  /// Leave a group conversation
+  /// POST /group-conversations/:id/leave
+  Future<bool> leaveGroupConversation(String groupId) async {
+    try {
+      final ensured = await ensureUserExists();
+      if (!ensured) return false;
+      final token = await _getAuthToken();
+      if (token == null) return false;
+
+      final url = '$_baseUrl/group-conversations/$groupId/leave';
+      final response = await _client.post(
+        Uri.parse(url),
+        headers: _getHeaders(token),
+      );
+
+      if (response.statusCode >= 200 && response.statusCode < 300) {
+        return true;
+      } else {
+        print(
+            'leaveGroupConversation failed: ${response.statusCode} - ${response.body}');
+      }
+    } catch (e) {
+      print('Error leaveGroupConversation: $e');
+    }
+    return false;
+  }
+
+  /// Get messages for a group conversation
+  /// GET /group-conversations/:id/messages
+  Future<Map<String, dynamic>?> listGroupConversationMessages(
+    String groupId, {
+    String? cursor,
+    int limit = 30,
+  }) async {
+    try {
+      final ensured = await ensureUserExists();
+      if (!ensured) return null;
+      final token = await _getAuthToken();
+      if (token == null) return null;
+
+      final qp = {
+        if (cursor != null) 'cursor': cursor,
+        'limit': limit.toString(),
+      };
+
+      final url = Uri.parse('$_baseUrl/group-conversations/$groupId/messages')
+          .replace(queryParameters: qp);
+      final response = await _client.get(url, headers: _getHeaders(token));
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        if (data is Map<String, dynamic>) return data;
+      } else {
+        print(
+            'listGroupConversationMessages failed: ${response.statusCode} - ${response.body}');
+      }
+    } catch (e) {
+      print('Error listGroupConversationMessages: $e');
+    }
+    return null;
+  }
+
+  // ==================== END GROUP CONVERSATIONS ====================
 
   Future<List<Map<String, dynamic>>?> getCreatedPulses() async {
     // Fetch all pulses visible to the user, then filter client-side
@@ -1941,5 +2187,658 @@ class ApiService {
       print('Error getMapOverview: $e');
     }
     return null;
+  }
+
+  // Pulse invitations
+  Future<Map<String, dynamic>?> inviteToPulse({
+    required String pulseId,
+    required List<String> userIds,
+  }) async {
+    try {
+      final token = await _getAuthToken();
+      if (token == null) {
+        print('No authentication token available');
+        return null;
+      }
+
+      final url = '$_baseUrl/pulses/$pulseId/invite';
+      final body = jsonEncode({
+        'userIds': userIds,
+      });
+
+      final response = await _client.post(
+        Uri.parse(url),
+        headers: _getHeaders(token),
+        body: body,
+      );
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        return data;
+      } else {
+        print(
+            'Failed to invite to pulse: ${response.statusCode} - ${response.body}');
+        return null;
+      }
+    } catch (e) {
+      print('Error inviting to pulse: $e');
+      return null;
+    }
+  }
+
+  Future<List<Map<String, dynamic>>?> getPulseInvitations() async {
+    try {
+      final token = await _getAuthToken();
+      if (token == null) {
+        print('No authentication token available');
+        return null;
+      }
+
+      final url = '$_baseUrl/pulses/invitations';
+      final response = await _client.get(
+        Uri.parse(url),
+        headers: _getHeaders(token),
+      );
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        if (data is List) {
+          return List<Map<String, dynamic>>.from(data);
+        }
+      } else {
+        print(
+            'Failed to fetch pulse invitations: ${response.statusCode} - ${response.body}');
+        return null;
+      }
+    } catch (e) {
+      print('Error fetching pulse invitations: $e');
+      return null;
+    }
+    return null;
+  }
+
+  Future<Map<String, dynamic>?> respondToPulseInvitation({
+    required String invitationId,
+    required bool accept,
+  }) async {
+    try {
+      final token = await _getAuthToken();
+      if (token == null) {
+        print('No authentication token available');
+        return null;
+      }
+
+      final url = '$_baseUrl/pulses/invitations/$invitationId/respond';
+      final body = jsonEncode({
+        'accept': accept,
+      });
+
+      final response = await _client.post(
+        Uri.parse(url),
+        headers: _getHeaders(token),
+        body: body,
+      );
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        return data;
+      } else {
+        print(
+            'Failed to respond to invitation: ${response.statusCode} - ${response.body}');
+        return null;
+      }
+    } catch (e) {
+      print('Error responding to invitation: $e');
+      return null;
+    }
+  }
+
+  // ========== Unified Invitations API ==========
+
+  /// Get all pending invitations for the current user (unified across all types)
+  /// Optional [type] filter: 'PULSE_CHAT', 'GROUP_CHAT', 'DIRECT_MESSAGE'
+  Future<List<Map<String, dynamic>>?> getAllInvitations({String? type}) async {
+    try {
+      final token = await _getAuthToken();
+      if (token == null) {
+        print('No authentication token available');
+        return null;
+      }
+
+      var url = '$_baseUrl/invitations';
+      if (type != null && type.isNotEmpty) {
+        url += '?type=$type';
+      }
+
+      final response = await _client.get(
+        Uri.parse(url),
+        headers: _getHeaders(token),
+      );
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        if (data is List) {
+          return List<Map<String, dynamic>>.from(data);
+        }
+      } else {
+        print(
+            'Failed to fetch invitations: ${response.statusCode} - ${response.body}');
+        return null;
+      }
+    } catch (e) {
+      print('Error fetching invitations: $e');
+      return null;
+    }
+    return null;
+  }
+
+  /// Get count of pending invitations by type
+  Future<Map<String, dynamic>?> getInvitationCounts() async {
+    try {
+      final token = await _getAuthToken();
+      if (token == null) {
+        print('No authentication token available');
+        return null;
+      }
+
+      final url = '$_baseUrl/invitations/count';
+      final response = await _client.get(
+        Uri.parse(url),
+        headers: _getHeaders(token),
+      );
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        return data;
+      } else {
+        print(
+            'Failed to fetch invitation counts: ${response.statusCode} - ${response.body}');
+        return null;
+      }
+    } catch (e) {
+      print('Error fetching invitation counts: $e');
+      return null;
+    }
+  }
+
+  /// Respond to any invitation using unified endpoint (replacement for specific methods)
+  Future<Map<String, dynamic>?> respondToInvitationUnified({
+    required String invitationId,
+    required bool accept,
+  }) async {
+    try {
+      final token = await _getAuthToken();
+      if (token == null) {
+        print('No authentication token available');
+        return null;
+      }
+
+      final url = '$_baseUrl/invitations/$invitationId/respond';
+      final body = jsonEncode({
+        'accept': accept,
+      });
+
+      final response = await _client.post(
+        Uri.parse(url),
+        headers: _getHeaders(token),
+        body: body,
+      );
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        return data;
+      } else {
+        print(
+            'Failed to respond to invitation: ${response.statusCode} - ${response.body}');
+        return null;
+      }
+    } catch (e) {
+      print('Error responding to invitation: $e');
+      return null;
+    }
+  }
+
+  // ============= SETTINGS API METHODS =============
+
+  /// Get user settings
+  Future<Map<String, dynamic>?> getUserSettings() async {
+    try {
+      final token = await _getAuthToken();
+      if (token == null) {
+        print('No authentication token available');
+        return null;
+      }
+
+      final url = '$_baseUrl/settings';
+      final response = await _client.get(
+        Uri.parse(url),
+        headers: _getHeaders(token),
+      );
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        return data;
+      } else {
+        print(
+            'Failed to fetch settings: ${response.statusCode} - ${response.body}');
+        return null;
+      }
+    } catch (e) {
+      print('Error fetching settings: $e');
+      return null;
+    }
+  }
+
+  /// Update user settings
+  Future<Map<String, dynamic>?> updateUserSettings(
+      Map<String, dynamic> settings) async {
+    try {
+      final token = await _getAuthToken();
+      if (token == null) {
+        print('No authentication token available');
+        return null;
+      }
+
+      final url = '$_baseUrl/settings';
+      final body = jsonEncode(settings);
+
+      final response = await _client.put(
+        Uri.parse(url),
+        headers: _getHeaders(token),
+        body: body,
+      );
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        return data;
+      } else {
+        print(
+            'Failed to update settings: ${response.statusCode} - ${response.body}');
+        return null;
+      }
+    } catch (e) {
+      print('Error updating settings: $e');
+      return null;
+    }
+  }
+
+  /// Get blocked users
+  Future<List<Map<String, dynamic>>?> getBlockedUsers() async {
+    try {
+      final token = await _getAuthToken();
+      if (token == null) {
+        print('No authentication token available');
+        return null;
+      }
+
+      final url = '$_baseUrl/settings/blocked-users';
+      final response = await _client.get(
+        Uri.parse(url),
+        headers: _getHeaders(token),
+      );
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        if (data is List) {
+          return data.cast<Map<String, dynamic>>();
+        }
+        return null;
+      } else {
+        print(
+            'Failed to fetch blocked users: ${response.statusCode} - ${response.body}');
+        return null;
+      }
+    } catch (e) {
+      print('Error fetching blocked users: $e');
+      return null;
+    }
+  }
+
+  /// Block a user
+  Future<Map<String, dynamic>?> blockUser({
+    required String userId,
+    String? reason,
+  }) async {
+    try {
+      final token = await _getAuthToken();
+      if (token == null) {
+        print('No authentication token available');
+        return null;
+      }
+
+      final url = '$_baseUrl/settings/block-user';
+      final body = jsonEncode({
+        'userId': userId,
+        if (reason != null) 'reason': reason,
+      });
+
+      final response = await _client.post(
+        Uri.parse(url),
+        headers: _getHeaders(token),
+        body: body,
+      );
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        return data;
+      } else {
+        print(
+            'Failed to block user: ${response.statusCode} - ${response.body}');
+        return null;
+      }
+    } catch (e) {
+      print('Error blocking user: $e');
+      return null;
+    }
+  }
+
+  /// Unblock a user
+  Future<bool> unblockUser(String userId) async {
+    try {
+      final token = await _getAuthToken();
+      if (token == null) {
+        print('No authentication token available');
+        return false;
+      }
+
+      final url = '$_baseUrl/settings/unblock-user/$userId';
+      final response = await _client.delete(
+        Uri.parse(url),
+        headers: _getHeaders(token),
+      );
+
+      if (response.statusCode == 200) {
+        return true;
+      } else {
+        print(
+            'Failed to unblock user: ${response.statusCode} - ${response.body}');
+        return false;
+      }
+    } catch (e) {
+      print('Error unblocking user: $e');
+      return false;
+    }
+  }
+
+  // ============================================================================
+  // Activity Status API Methods
+  // ============================================================================
+
+  /// Get activity status for specific users
+  Future<Map<String, dynamic>?> getActivityStatuses(
+      List<String> userIds) async {
+    try {
+      final token = await _getAuthToken();
+      if (token == null) {
+        print('No authentication token available');
+        return null;
+      }
+
+      final url = '$_baseUrl/activity/status';
+      final body = jsonEncode({'userIds': userIds});
+
+      final response = await _client.post(
+        Uri.parse(url),
+        headers: _getHeaders(token),
+        body: body,
+      );
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        return data['statuses'];
+      } else {
+        print(
+            'Failed to get activity statuses: ${response.statusCode} - ${response.body}');
+        return null;
+      }
+    } catch (e) {
+      print('Error getting activity statuses: $e');
+      return null;
+    }
+  }
+
+  /// Get all online users (who have made their status visible)
+  Future<List<Map<String, dynamic>>?> getOnlineUsers() async {
+    try {
+      final token = await _getAuthToken();
+      if (token == null) {
+        print('No authentication token available');
+        return null;
+      }
+
+      final url = '$_baseUrl/activity/online';
+      final response = await _client.get(
+        Uri.parse(url),
+        headers: _getHeaders(token),
+      );
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        if (data['users'] is List) {
+          return List<Map<String, dynamic>>.from(data['users']);
+        }
+        return [];
+      } else {
+        print(
+            'Failed to get online users: ${response.statusCode} - ${response.body}');
+        return null;
+      }
+    } catch (e) {
+      print('Error getting online users: $e');
+      return null;
+    }
+  }
+
+  /// Manually set activity status (online, away, offline)
+  Future<bool> setActivityStatus(String status) async {
+    try {
+      final token = await _getAuthToken();
+      if (token == null) {
+        print('No authentication token available');
+        return false;
+      }
+
+      // For now, we only have the /away endpoint
+      // In a full implementation, you'd have separate endpoints or a single endpoint with a status parameter
+      if (status == 'away') {
+        final url = '$_baseUrl/activity/away';
+        final response = await _client.post(
+          Uri.parse(url),
+          headers: _getHeaders(token),
+        );
+
+        if (response.statusCode == 200) {
+          return true;
+        } else {
+          print(
+              'Failed to set away status: ${response.statusCode} - ${response.body}');
+          return false;
+        }
+      }
+
+      // For online/offline, we rely on socket connection state
+      // The backend automatically sets online when socket connects
+      // and offline when socket disconnects
+      return true;
+    } catch (e) {
+      print('Error setting activity status: $e');
+      return false;
+    }
+  }
+
+  // ============================================================================
+  // HIGHLIGHTS API (Video-based highlights captured during pulses)
+  // ============================================================================
+
+  /// Get all highlights for a specific pulse
+  Future<List<Map<String, dynamic>>?> getPulseHighlights(String pulseId) async {
+    try {
+      final url = '$_baseUrl/highlights/pulse/$pulseId';
+      final response = await _client.get(Uri.parse(url));
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        if (data is List) {
+          return List<Map<String, dynamic>>.from(data);
+        }
+        return [];
+      } else {
+        print(
+            'Failed to get pulse highlights: ${response.statusCode} - ${response.body}');
+        return null;
+      }
+    } catch (e) {
+      print('Error getting pulse highlights: $e');
+      return null;
+    }
+  }
+
+  /// Get all highlights created by a user
+  Future<List<Map<String, dynamic>>?> getUserHighlights(String userId) async {
+    try {
+      final url = '$_baseUrl/highlights/user/$userId';
+      final response = await _client.get(Uri.parse(url));
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        if (data is List) {
+          return List<Map<String, dynamic>>.from(data);
+        }
+        return [];
+      } else {
+        print(
+            'Failed to get user highlights: ${response.statusCode} - ${response.body}');
+        return null;
+      }
+    } catch (e) {
+      print('Error getting user highlights: $e');
+      return null;
+    }
+  }
+
+  /// Get a specific highlight by ID
+  Future<Map<String, dynamic>?> getHighlight(String highlightId) async {
+    try {
+      final url = '$_baseUrl/highlights/$highlightId';
+      final response = await _client.get(Uri.parse(url));
+
+      if (response.statusCode == 200) {
+        return jsonDecode(response.body) as Map<String, dynamic>;
+      } else {
+        print(
+            'Failed to get highlight: ${response.statusCode} - ${response.body}');
+        return null;
+      }
+    } catch (e) {
+      print('Error getting highlight: $e');
+      return null;
+    }
+  }
+
+  /// Create a new highlight video (videoUrl must be uploaded to storage first)
+  Future<Map<String, dynamic>?> createHighlight({
+    required String videoUrl,
+    required int duration,
+    required String pulseId,
+    String? thumbnailUrl,
+    String? caption,
+    bool? isPublic,
+  }) async {
+    try {
+      final token = await _getAuthToken();
+      if (token == null) {
+        print('No authentication token available');
+        return null;
+      }
+
+      final url = '$_baseUrl/highlights';
+      final response = await _client.post(
+        Uri.parse(url),
+        headers: _getHeaders(token),
+        body: jsonEncode({
+          'videoUrl': videoUrl,
+          'duration': duration,
+          'pulseId': pulseId,
+          if (thumbnailUrl != null) 'thumbnailUrl': thumbnailUrl,
+          if (caption != null) 'caption': caption,
+          if (isPublic != null) 'isPublic': isPublic,
+        }),
+      );
+
+      if (response.statusCode == 201) {
+        return jsonDecode(response.body) as Map<String, dynamic>;
+      } else {
+        print(
+            'Failed to create highlight: ${response.statusCode} - ${response.body}');
+        return null;
+      }
+    } catch (e) {
+      print('Error creating highlight: $e');
+      return null;
+    }
+  }
+
+  /// Update a highlight (caption or visibility)
+  Future<Map<String, dynamic>?> updateHighlight({
+    required String highlightId,
+    String? caption,
+    bool? isPublic,
+  }) async {
+    try {
+      final token = await _getAuthToken();
+      if (token == null) {
+        print('No authentication token available');
+        return null;
+      }
+
+      final url = '$_baseUrl/highlights/$highlightId';
+      final response = await _client.patch(
+        Uri.parse(url),
+        headers: _getHeaders(token),
+        body: jsonEncode({
+          if (caption != null) 'caption': caption,
+          if (isPublic != null) 'isPublic': isPublic,
+        }),
+      );
+
+      if (response.statusCode == 200) {
+        return jsonDecode(response.body) as Map<String, dynamic>;
+      } else {
+        print(
+            'Failed to update highlight: ${response.statusCode} - ${response.body}');
+        return null;
+      }
+    } catch (e) {
+      print('Error updating highlight: $e');
+      return null;
+    }
+  }
+
+  /// Delete a highlight
+  Future<bool> deleteHighlight(String highlightId) async {
+    try {
+      final token = await _getAuthToken();
+      if (token == null) {
+        print('No authentication token available');
+        return false;
+      }
+
+      final url = '$_baseUrl/highlights/$highlightId';
+      final response = await _client.delete(
+        Uri.parse(url),
+        headers: _getHeaders(token),
+      );
+
+      if (response.statusCode == 200) {
+        return true;
+      } else {
+        print(
+            'Failed to delete highlight: ${response.statusCode} - ${response.body}');
+        return false;
+      }
+    } catch (e) {
+      print('Error deleting highlight: $e');
+      return false;
+    }
   }
 }

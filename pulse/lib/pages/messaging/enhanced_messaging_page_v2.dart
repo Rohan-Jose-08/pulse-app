@@ -27,6 +27,7 @@ class EnhancedMessage {
     this.senderPhotoUrl,
     this.isSystemMessage = false,
     this.readBy,
+    this.deliveredTo,
     this.editedAt,
   });
 
@@ -41,6 +42,8 @@ class EnhancedMessage {
   final String? senderPhotoUrl;
   final bool isSystemMessage;
   final List<String>? readBy; // list of user IDs who have read this message
+  final List<String>?
+      deliveredTo; // list of user IDs who have received this message
   final DateTime? editedAt;
 
   bool get isImage => (imageUrl != null && imageUrl!.isNotEmpty);
@@ -67,6 +70,9 @@ class EnhancedMessage {
         isSystemMessage: data['isSystemMessage'] == true,
         readBy:
             data['readBy'] != null ? List<String>.from(data['readBy']) : null,
+        deliveredTo: data['deliveredTo'] != null
+            ? List<String>.from(data['deliveredTo'])
+            : null,
         editedAt: data['editedAt'] != null
             ? DateTime.tryParse(data['editedAt'].toString())
             : null,
@@ -1514,14 +1520,27 @@ class _EnhancedMessageBubbleState extends State<EnhancedMessageBubble>
               ],
               if (widget.isMine) ...[
                 const SizedBox(width: 4),
-                Icon(
-                  Icons.done_all,
-                  size: 14,
-                  color: widget.message.readBy != null &&
-                          widget.message.readBy!.length > 1
-                      ? widget.theme.primary
-                      : widget.theme.secondaryText,
-                ),
+                // Show delivered/read status
+                (() {
+                  final readBy = widget.message.readBy ?? [];
+                  final deliveredTo = widget.message.deliveredTo ?? [];
+
+                  // If anyone has read it (excluding sender), show blue double check
+                  if (readBy.isNotEmpty) {
+                    return Icon(Icons.done_all,
+                        size: 14, color: widget.theme.primary);
+                  }
+                  // If delivered to anyone (excluding sender), show gray double check
+                  else if (deliveredTo.isNotEmpty) {
+                    return Icon(Icons.done_all,
+                        size: 14, color: widget.theme.secondaryText);
+                  }
+                  // Otherwise show single check (sent but not delivered)
+                  else {
+                    return Icon(Icons.check,
+                        size: 14, color: widget.theme.secondaryText);
+                  }
+                })(),
               ],
             ],
           ),

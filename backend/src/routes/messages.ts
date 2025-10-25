@@ -177,6 +177,30 @@ router.get('/conversations/:id/messages', authenticateUser, async (req, res) => 
 			take,
 			cursor: cursor ? { id: cursor } : undefined,
 			skip: cursor ? 1 : 0,
+			include: {
+				sender: {
+					select: {
+						id: true,
+						displayName: true,
+						profileImageUrl: true,
+					}
+				},
+				repliedTo: {
+					select: {
+						id: true,
+						text: true,
+						imageUrl: true,
+						videoUrl: true,
+						senderId: true,
+						sender: {
+							select: {
+								id: true,
+								displayName: true,
+							}
+						}
+					}
+				}
+			}
 		});
 
 		// Fetch reactions for these messages
@@ -199,7 +223,19 @@ router.get('/conversations/:id/messages', authenticateUser, async (req, res) => 
 		res.json({
 			messages: messages.reverse().map(m => ({
 				...m,
+				senderName: (m as any).sender?.displayName || null,
+				senderPhotoUrl: (m as any).sender?.profileImageUrl || null,
 				reactions: reactionMap[m.id] || {},
+				deliveredTo: m.deliveredTo || [],
+				readBy: m.readBy || [],
+				repliedTo: (m as any).repliedTo ? {
+					id: (m as any).repliedTo.id,
+					text: (m as any).repliedTo.text,
+					imageUrl: (m as any).repliedTo.imageUrl,
+					videoUrl: (m as any).repliedTo.videoUrl,
+					senderId: (m as any).repliedTo.senderId,
+					senderName: (m as any).repliedTo.sender?.displayName || 'Unknown',
+				} : null,
 			})),
 			nextCursor: messages.length === take ? messages[messages.length - 1].id : null,
 		});
@@ -228,11 +264,23 @@ router.post('/conversations/:id/invitations', authenticateUser, async (req, res)
 			const alreadyParticipant = convo.participants.some(p => p.id === targetId);
 			if (alreadyParticipant) continue;
 			try {
-				const invite = await prisma.conversationInvitation.upsert({
-					where: { conversationId_inviteeId: { conversationId: id, inviteeId: targetId } },
-					update: { status: 'PENDING' },
-					create: { conversationId: id, inviterId: me, inviteeId: targetId },
+				// Check if invitation already exists
+				const existingInvite = await prisma.conversationInvitation.findFirst({
+					where: {
+						conversationId: id,
+						inviteeId: targetId,
+						status: 'PENDING'
+					}
 				});
+
+				const invite = existingInvite 
+					? await prisma.conversationInvitation.update({
+							where: { id: existingInvite.id },
+							data: { status: 'PENDING', invitationType: 'GROUP_CHAT' }
+						})
+					: await prisma.conversationInvitation.create({
+							data: { conversationId: id, inviterId: me, inviteeId: targetId, invitationType: 'GROUP_CHAT' }
+						});
 				// Create notification for invitee
 				await prisma.notification.create({
 					data: {
@@ -287,6 +335,9 @@ router.post('/invitations/:invitationId/respond', authenticateUser, async (req, 
 		}
 		if (invitation.status !== 'PENDING') {
 			return res.status(400).json({ error: 'Invitation already responded' });
+		}
+		if (!invitation.conversationId) {
+			return res.status(400).json({ error: 'Invalid invitation: no conversation associated' });
 		}
 		if (normalized === 'ACCEPT') {
 			// Add user to conversation participants
@@ -751,6 +802,385 @@ router.get('/conversations-pulse', authenticateUser, async (req, res) => {
 		}
 	});
 
+	// GroupConversation (normal group chats not tied to pulses)
+
+	// Create a new group conversation
+	router.post('/group-conversations', authenticateUser, async (req, res) => {
+		try {
+			const me = req.user.id as string;
+			const { name, description, avatarUrl, initialParticipantIds } = req.body as {
+				name?: string;
+				description?: string;
+				avatarUrl?: string;
+				initialParticipantIds?: string[];
+			};
+
+			if (!name || name.trim().length === 0) {
+				return res.status(400).json({ error: 'Group name is required' });
+			}
+
+			// Prepare participants: creator + initial members (deduplicated)
+			const participantIds = new Set<string>([me]);
+			if (Array.isArray(initialParticipantIds)) {
+				initialParticipantIds.forEach(id => {
+					if (id && typeof id === 'string') participantIds.add(id);
+				});
+			}
+
+			const convo = await (prisma as any).groupConversation.create({
+				data: {
+					name: name.trim(),
+					description: description?.trim() || null,
+					avatarUrl: avatarUrl || null,
+					creator: { connect: { id: me } },
+					participants: {
+						connect: Array.from(participantIds).map(id => ({ id }))
+					}
+				},
+				include: {
+					participants: { select: { id: true, displayName: true, profileImageUrl: true } },
+					creator: { select: { id: true, displayName: true } }
+				}
+			});
+
+			// Ensure legacy Conversation exists with same id for message compatibility
+			try {
+				const legacy = await (prisma as any).conversation.findUnique({ where: { id: convo.id } });
+				if (!legacy) {
+					await (prisma as any).conversation.create({
+						data: {
+							id: convo.id,
+							isGroup: true,
+							participants: {
+								connect: Array.from(participantIds).map(id => ({ id }))
+							},
+							name: convo.name,
+							avatarUrl: convo.avatarUrl || null,
+						},
+					});
+				}
+			} catch (e) {
+				console.warn('legacy conversation ensure failed (group create)', e);
+			}
+
+			const mapped = {
+				id: convo.id,
+				name: convo.name,
+				description: convo.description,
+				avatarUrl: convo.avatarUrl,
+				creatorId: convo.creatorId,
+				creator: convo.creator,
+				participants: convo.participants,
+				createdAt: convo.createdAt,
+				updatedAt: convo.updatedAt,
+				lastMessageText: convo.lastMessageText,
+				lastSenderId: convo.lastSenderId,
+				isGroup: true,
+				type: 'group',
+			};
+
+			res.status(201).json(mapped);
+		} catch (e) {
+			console.error('create group conversation error', e);
+			res.status(500).json({ error: 'Internal server error' });
+		}
+	});
+
+	// Get a specific group conversation
+	router.get('/group-conversations/:id', authenticateUser, async (req, res) => {
+		try {
+			const me = req.user.id as string;
+			const { id } = req.params;
+
+			const convo = await (prisma as any).groupConversation.findUnique({
+				where: { id },
+				include: {
+					participants: { select: { id: true, displayName: true, profileImageUrl: true } },
+					creator: { select: { id: true, displayName: true } }
+				}
+			});
+
+			if (!convo) {
+				return res.status(404).json({ error: 'Group conversation not found' });
+			}
+
+			const isParticipant = (convo.participants as any[]).some((p: any) => p.id === me);
+			if (!isParticipant) {
+				return res.status(403).json({ error: 'Forbidden' });
+			}
+
+			const mapped = {
+				id: convo.id,
+				name: convo.name,
+				description: convo.description,
+				avatarUrl: convo.avatarUrl,
+				creatorId: convo.creatorId,
+				creator: convo.creator,
+				participants: convo.participants,
+				createdAt: convo.createdAt,
+				updatedAt: convo.updatedAt,
+				lastMessageText: convo.lastMessageText,
+				lastSenderId: convo.lastSenderId,
+				isGroup: true,
+				type: 'group',
+			};
+
+			res.json(mapped);
+		} catch (e) {
+			console.error('get group conversation error', e);
+			res.status(500).json({ error: 'Internal server error' });
+		}
+	});
+
+	// List my group conversations
+	router.get('/group-conversations', authenticateUser, async (req, res) => {
+		try {
+			const me = req.user.id as string;
+
+			const convos = await (prisma as any).groupConversation.findMany({
+				where: { participants: { some: { id: me } } },
+				orderBy: { updatedAt: 'desc' },
+				include: {
+					participants: { select: { id: true, displayName: true, profileImageUrl: true } },
+					creator: { select: { id: true, displayName: true } }
+				}
+			});
+
+			const mapped = convos.map((c: any) => ({
+				id: c.id,
+				name: c.name,
+				description: c.description,
+				avatarUrl: c.avatarUrl,
+				creatorId: c.creatorId,
+				creator: c.creator,
+				participants: c.participants,
+				createdAt: c.createdAt,
+				updatedAt: c.updatedAt,
+				lastMessageText: c.lastMessageText,
+				lastSenderId: c.lastSenderId,
+				isGroup: true,
+				type: 'group',
+			}));
+
+			res.json(mapped);
+		} catch (e) {
+			console.error('list group conversations error', e);
+			res.status(500).json({ error: 'Internal server error' });
+		}
+	});
+
+	// Invite members to a group conversation
+	router.post('/group-conversations/:id/invite', authenticateUser, async (req, res) => {
+		try {
+			const me = req.user.id as string;
+			const { id } = req.params;
+			const { userIds } = req.body as { userIds?: string[] };
+
+			if (!Array.isArray(userIds) || userIds.length === 0) {
+				return res.status(400).json({ error: 'userIds required' });
+			}
+
+			const convo = await (prisma as any).groupConversation.findUnique({
+				where: { id },
+				include: { participants: true }
+			});
+
+			if (!convo) {
+				return res.status(404).json({ error: 'Group conversation not found' });
+			}
+
+			const isParticipant = convo.participants.some((p: any) => p.id === me);
+			if (!isParticipant) {
+				return res.status(403).json({ error: 'Forbidden' });
+			}
+
+			const created: any[] = [];
+			for (const targetId of userIds) {
+				if (!targetId || targetId === me) continue;
+
+				const alreadyParticipant = convo.participants.some((p: any) => p.id === targetId);
+				if (alreadyParticipant) continue;
+
+				try {
+					// Check if invitation already exists
+					const existingInvite = await prisma.conversationInvitation.findFirst({
+						where: {
+							conversationId: id,
+							inviteeId: targetId,
+							status: 'PENDING'
+						}
+					});
+
+					const invite = existingInvite
+						? await prisma.conversationInvitation.update({
+								where: { id: existingInvite.id },
+								data: { status: 'PENDING', invitationType: 'GROUP_CHAT' }
+							})
+						: await prisma.conversationInvitation.create({
+								data: {
+									conversationId: id,
+									inviterId: me,
+									inviteeId: targetId,
+									invitationType: 'GROUP_CHAT'
+								}
+							});
+
+					// Create notification for invitee
+					await prisma.notification.create({
+						data: {
+							userId: targetId,
+							type: 'INVITE',
+							title: 'Group Chat Invitation',
+							message: `You have been invited to join "${convo.name}"`,
+							data: {
+								conversationId: id,
+								inviterId: me,
+								invitationId: invite.id,
+								conversationType: 'group'
+							},
+						},
+					});
+
+					created.push(invite);
+				} catch (e) {
+					console.error('Group invite create error', e);
+				}
+			}
+
+			res.json({ ok: true, created });
+		} catch (e) {
+			console.error('invite to group conversation error', e);
+			res.status(500).json({ error: 'Internal server error' });
+		}
+	});
+
+	// Update group conversation settings (name, description, avatar)
+	router.patch('/group-conversations/:id', authenticateUser, async (req, res) => {
+		try {
+			const me = req.user.id as string;
+			const { id } = req.params;
+			const { name, description, avatarUrl } = req.body as {
+				name?: string;
+				description?: string;
+				avatarUrl?: string;
+			};
+
+			const convo = await (prisma as any).groupConversation.findUnique({
+				where: { id },
+				include: { participants: true }
+			});
+
+			if (!convo) {
+				return res.status(404).json({ error: 'Group conversation not found' });
+			}
+
+			const isParticipant = convo.participants.some((p: any) => p.id === me);
+			if (!isParticipant) {
+				return res.status(403).json({ error: 'Forbidden' });
+			}
+
+			const updateData: any = {};
+			if (name !== undefined && name.trim().length > 0) {
+				updateData.name = name.trim();
+			}
+			if (description !== undefined) {
+				updateData.description = description?.trim() || null;
+			}
+			if (avatarUrl !== undefined) {
+				updateData.avatarUrl = avatarUrl || null;
+			}
+
+			const updated = await (prisma as any).groupConversation.update({
+				where: { id },
+				data: updateData,
+				include: {
+					participants: { select: { id: true, displayName: true, profileImageUrl: true } },
+					creator: { select: { id: true, displayName: true } }
+				}
+			});
+
+			// Also update legacy conversation
+			try {
+				await (prisma as any).conversation.update({
+					where: { id },
+					data: {
+						name: updated.name,
+						avatarUrl: updated.avatarUrl,
+					}
+				});
+			} catch (e) {
+				console.warn('legacy conversation update failed', e);
+			}
+
+			const mapped = {
+				id: updated.id,
+				name: updated.name,
+				description: updated.description,
+				avatarUrl: updated.avatarUrl,
+				creatorId: updated.creatorId,
+				creator: updated.creator,
+				participants: updated.participants,
+				createdAt: updated.createdAt,
+				updatedAt: updated.updatedAt,
+				lastMessageText: updated.lastMessageText,
+				lastSenderId: updated.lastSenderId,
+				isGroup: true,
+				type: 'group',
+			};
+
+			res.json(mapped);
+		} catch (e) {
+			console.error('update group conversation error', e);
+			res.status(500).json({ error: 'Internal server error' });
+		}
+	});
+
+	// Leave a group conversation
+	router.post('/group-conversations/:id/leave', authenticateUser, async (req, res) => {
+		try {
+			const me = req.user.id as string;
+			const { id } = req.params;
+
+			const convo = await (prisma as any).groupConversation.findUnique({
+				where: { id },
+				include: { participants: true }
+			});
+
+			if (!convo) {
+				return res.status(404).json({ error: 'Group conversation not found' });
+			}
+
+			const isParticipant = convo.participants.some((p: any) => p.id === me);
+			if (!isParticipant) {
+				return res.status(400).json({ error: 'Not a participant' });
+			}
+
+			await (prisma as any).groupConversation.update({
+				where: { id },
+				data: {
+					participants: { disconnect: { id: me } }
+				}
+			});
+
+			// Also disconnect from legacy conversation
+			try {
+				await (prisma as any).conversation.update({
+					where: { id },
+					data: {
+						participants: { disconnect: { id: me } }
+					}
+				});
+			} catch (e) {
+				console.warn('legacy conversation disconnect failed', e);
+			}
+
+			res.json({ ok: true, message: 'Left group conversation' });
+		} catch (e) {
+			console.error('leave group conversation error', e);
+			res.status(500).json({ error: 'Internal server error' });
+		}
+	});
+
 	// Messages for new models (proxy to legacy Conversation messages by shared id)
 	router.get('/direct-conversations/:id/messages', authenticateUser, async (req, res) => {
 		try {
@@ -770,6 +1200,30 @@ router.get('/conversations-pulse', authenticateUser, async (req, res) => {
 				take,
 				cursor: cursor ? { id: cursor } : undefined,
 				skip: cursor ? 1 : 0,
+				include: {
+					sender: {
+						select: {
+							id: true,
+							displayName: true,
+							profileImageUrl: true,
+						}
+					},
+					repliedTo: {
+						select: {
+							id: true,
+							text: true,
+							imageUrl: true,
+							videoUrl: true,
+							senderId: true,
+							sender: {
+								select: {
+									id: true,
+									displayName: true,
+								}
+							}
+						}
+					}
+				}
 			});
 
 			const ids = messages.map(m => m.id);
@@ -786,7 +1240,22 @@ router.get('/conversations-pulse', authenticateUser, async (req, res) => {
 			});
 
 			res.json({
-				messages: messages.reverse().map(m => ({ ...m, reactions: reactionMap[m.id] || {} })),
+				messages: messages.reverse().map(m => ({
+					...m,
+					senderName: (m as any).sender?.displayName || null,
+					senderPhotoUrl: (m as any).sender?.profileImageUrl || null,
+					reactions: reactionMap[m.id] || {},
+					deliveredTo: m.deliveredTo || [],
+					readBy: m.readBy || [],
+					repliedTo: (m as any).repliedTo ? {
+						id: (m as any).repliedTo.id,
+						text: (m as any).repliedTo.text,
+						imageUrl: (m as any).repliedTo.imageUrl,
+						videoUrl: (m as any).repliedTo.videoUrl,
+						senderId: (m as any).repliedTo.senderId,
+						senderName: (m as any).repliedTo.sender?.displayName || 'Unknown',
+					} : null,
+				})),
 				nextCursor: messages.length === take ? messages[messages.length - 1].id : null,
 			});
 		} catch (e) {
@@ -815,15 +1284,37 @@ router.get('/conversations-pulse', authenticateUser, async (req, res) => {
 				if (byPulse) legacyId = byPulse.id;
 			}
 
-			const messages = await prisma.message.findMany({
-				where: { conversationId: legacyId },
-				orderBy: { createdAt: 'desc' },
-				take,
-				cursor: cursor ? { id: cursor } : undefined,
-				skip: cursor ? 1 : 0,
-			});
-
-			const ids = messages.map(m => m.id);
+		const messages = await prisma.message.findMany({
+			where: { conversationId: legacyId },
+			orderBy: { createdAt: 'desc' },
+			take,
+			cursor: cursor ? { id: cursor } : undefined,
+			skip: cursor ? 1 : 0,
+			include: {
+				sender: {
+					select: {
+						id: true,
+						displayName: true,
+						profileImageUrl: true,
+					}
+				},
+				repliedTo: {
+					select: {
+						id: true,
+						text: true,
+						imageUrl: true,
+						videoUrl: true,
+						senderId: true,
+						sender: {
+							select: {
+								id: true,
+								displayName: true,
+							}
+						}
+					}
+				}
+			}
+		});			const ids = messages.map(m => m.id);
 			let reactions: { messageId: string; emoji: string; userId: string }[] = [];
 			if (ids.length) {
 				// @ts-ignore - messageReaction available after prisma generate
@@ -833,11 +1324,26 @@ router.get('/conversations-pulse', authenticateUser, async (req, res) => {
 			reactions.forEach(r => {
 				if (!reactionMap[r.messageId]) reactionMap[r.messageId] = {};
 				if (!reactionMap[r.messageId][r.emoji]) reactionMap[r.messageId][r.emoji] = [];
-				reactionMap[r.messageId][r.emoji].push(r.userId);
-			});
+			reactionMap[r.messageId][r.emoji].push(r.userId);
+		});
 
-				res.json({
-				messages: messages.reverse().map(m => ({ ...m, reactions: reactionMap[m.id] || {} })),
+			res.json({
+				messages: messages.reverse().map(m => ({
+					...m,
+					senderName: (m as any).sender?.displayName || null,
+					senderPhotoUrl: (m as any).sender?.profileImageUrl || null,
+					reactions: reactionMap[m.id] || {},
+					deliveredTo: m.deliveredTo || [],
+					readBy: m.readBy || [],
+					repliedTo: (m as any).repliedTo ? {
+						id: (m as any).repliedTo.id,
+						text: (m as any).repliedTo.text,
+						imageUrl: (m as any).repliedTo.imageUrl,
+						videoUrl: (m as any).repliedTo.videoUrl,
+						senderId: (m as any).repliedTo.senderId,
+						senderName: (m as any).repliedTo.sender?.displayName || 'Unknown',
+					} : null,
+				})),
 				nextCursor: messages.length === take ? messages[messages.length - 1].id : null,
 			});
 		} catch (e) {
@@ -845,8 +1351,6 @@ router.get('/conversations-pulse', authenticateUser, async (req, res) => {
 			res.status(500).json({ error: 'Internal server error' });
 		}
 	});
-
-
 	// --- Generic REST send: Post a message to a conversation by id ---
 	router.post('/conversations/:id/messages', authenticateUser, async (req, res) => {
 		try {
@@ -1023,5 +1527,216 @@ router.get('/conversations-pulse', authenticateUser, async (req, res) => {
 			res.status(500).json({ error: 'Internal server error' });
 		}
 	});
+
+	// Get messages for a group conversation
+	router.get('/group-conversations/:id/messages', authenticateUser, async (req, res) => {
+		try {
+			const me = req.user.id as string;
+			const { id } = req.params;
+			const { cursor, limit = '30' } = req.query as { cursor?: string; limit?: string };
+			const take = Math.max(1, Math.min(parseInt(limit as string, 10) || 30, 100));
+
+			const convo = await (prisma as any).groupConversation.findUnique({
+				where: { id },
+				include: { participants: true }
+			});
+
+			if (!convo) {
+				return res.status(404).json({ error: 'Conversation not found' });
+			}
+
+			const isParticipant = (convo.participants as any[]).some((p: any) => p.id === me);
+			if (!isParticipant) {
+				return res.status(403).json({ error: 'Forbidden' });
+			}
+
+		const messages = await prisma.message.findMany({
+			where: { conversationId: id },
+			orderBy: { createdAt: 'desc' },
+			take,
+			cursor: cursor ? { id: cursor } : undefined,
+			skip: cursor ? 1 : 0,
+			include: {
+				sender: {
+					select: {
+						id: true,
+						displayName: true,
+						profileImageUrl: true,
+					}
+				},
+				repliedTo: {
+					select: {
+						id: true,
+						text: true,
+						imageUrl: true,
+						videoUrl: true,
+						senderId: true,
+						sender: {
+							select: {
+								id: true,
+								displayName: true,
+							}
+						}
+					}
+				}
+			}
+		});			const ids = messages.map(m => m.id);
+			let reactions: { messageId: string; emoji: string; userId: string }[] = [];
+			if (ids.length) {
+				reactions = await (prisma as any).messageReaction.findMany({
+					where: { messageId: { in: ids } },
+					select: { messageId: true, emoji: true, userId: true }
+				});
+			}
+
+			const reactionMap: Record<string, Record<string, string[]>> = {};
+			reactions.forEach(r => {
+				if (!reactionMap[r.messageId]) reactionMap[r.messageId] = {};
+				if (!reactionMap[r.messageId][r.emoji]) reactionMap[r.messageId][r.emoji] = [];
+			reactionMap[r.messageId][r.emoji].push(r.userId);
+		});
+
+		res.json({
+			messages: messages.reverse().map(m => ({
+				...m,
+				senderName: (m as any).sender?.displayName || null,
+				senderPhotoUrl: (m as any).sender?.profileImageUrl || null,
+				reactions: reactionMap[m.id] || {},
+				deliveredTo: m.deliveredTo || [],
+				readBy: m.readBy || [],
+				repliedTo: (m as any).repliedTo ? {
+					id: (m as any).repliedTo.id,
+					text: (m as any).repliedTo.text,
+					imageUrl: (m as any).repliedTo.imageUrl,
+					videoUrl: (m as any).repliedTo.videoUrl,
+					senderId: (m as any).repliedTo.senderId,
+					senderName: (m as any).repliedTo.sender?.displayName || 'Unknown',
+				} : null,
+			})),
+			nextCursor: messages.length === take ? messages[messages.length - 1].id : null,
+		});
+	} catch (e) {
+		console.error('group conversation messages list error', e);
+		res.status(500).json({ error: 'Internal server error' });
+	}
+});	// Post a message to a group conversation
+	router.post('/group-conversations/:id/messages', authenticateUser, async (req, res) => {
+		try {
+			const me = req.user.id as string;
+			const { id } = req.params;
+			const { text, imageUrl, videoUrl } = req.body as {
+				text?: string;
+				imageUrl?: string;
+				videoUrl?: string;
+			};
+
+			if (!text && !imageUrl && !videoUrl) {
+				return res.status(400).json({ error: 'text or media required' });
+			}
+
+			const convo = await (prisma as any).groupConversation.findUnique({
+				where: { id },
+				include: { participants: true }
+			});
+
+			if (!convo) {
+				return res.status(404).json({ error: 'Conversation not found' });
+			}
+
+			const isParticipant = (convo.participants as any[]).some((p: any) => p.id === me);
+			if (!isParticipant) {
+				return res.status(403).json({ error: 'Forbidden' });
+			}
+
+			// Ensure legacy Conversation exists
+			let legacy = await (prisma as any).conversation.findUnique({ where: { id } });
+			if (!legacy) {
+				legacy = await (prisma as any).conversation.create({
+					data: {
+						id,
+						isGroup: true,
+						participants: {
+							connect: (convo.participants as any[]).map((u: any) => ({ id: u.id }))
+						},
+						name: convo.name,
+						avatarUrl: convo.avatarUrl || null,
+					},
+				});
+			}
+
+			const msg = await (prisma as any).message.create({
+				data: {
+					conversationId: legacy.id,
+					senderId: me,
+					text: text ?? null,
+					imageUrl: imageUrl ?? null,
+					videoUrl: videoUrl ?? null
+				}
+			});
+
+			const lastMessageText = text ?? (videoUrl ? '[video]' : (imageUrl ? '[image]' : ''));
+
+			await (prisma as any).conversation.update({
+				where: { id: legacy.id },
+				data: {
+					updatedAt: new Date(),
+					lastMessageText,
+					lastSenderId: me
+				}
+			});
+
+			await (prisma as any).groupConversation.update({
+				where: { id },
+				data: {
+					updatedAt: new Date(),
+					lastMessageText,
+					lastSenderId: me
+				}
+			}).catch(() => null);
+
+			// Emit realtime updates
+			try {
+				const io = getIo();
+				io?.to(`conversation:${legacy.id}`).emit('message:new', {
+					id: msg.id,
+					conversationId: legacy.id,
+					senderId: me,
+					text: msg.text,
+					imageUrl: msg.imageUrl,
+					createdAt: msg.createdAt,
+					videoUrl: msg.videoUrl
+				});
+
+				// Notify all participants
+				(convo.participants as any[]).forEach((p: any) => {
+					const sockets = userSockets.get(p.id);
+					if (!sockets) return;
+					sockets.forEach((sid: string) => {
+						io?.to(sid).emit('message:new', {
+							id: msg.id,
+							conversationId: legacy.id,
+							senderId: me,
+							text: msg.text,
+							imageUrl: msg.imageUrl,
+							createdAt: msg.createdAt,
+							videoUrl: msg.videoUrl
+						});
+						io?.to(sid).emit('conversation:updated', {
+							conversationId: legacy.id
+						});
+					});
+				});
+			} catch (e) {
+				console.warn('realtime emit failed', e);
+			}
+
+			res.status(201).json({ message: msg });
+		} catch (e) {
+			console.error('group conversation message post error', e);
+			res.status(500).json({ error: 'Internal server error' });
+		}
+	});
+
+
 
 

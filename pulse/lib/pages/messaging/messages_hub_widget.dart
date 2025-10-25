@@ -8,6 +8,8 @@ import '../../backend/api_service.dart';
 import '../../backend/socket_service.dart';
 import 'enhanced_messaging_page.dart';
 import 'live_group_chat_page.dart';
+import 'group_chat_page.dart';
+import 'create_group_chat_page.dart';
 import '/flutter_flow/flutter_flow_util.dart';
 import 'dart:async';
 
@@ -118,6 +120,76 @@ final _conversationsProvider = StreamProvider.autoDispose
   return controller.stream;
 });
 
+/// Group conversations stream (standalone group chats not tied to pulses)
+final _groupConversationsProvider = StreamProvider.autoDispose
+    .family<List<Map<String, dynamic>>, String>((ref, uid) {
+  final controller = StreamController<List<Map<String, dynamic>>>();
+  List<Map<String, dynamic>> items = [];
+  DateTime _lastReload = DateTime.fromMillisecondsSinceEpoch(0);
+
+  Future<void> _load({bool silent = false}) async {
+    try {
+      final list = await ApiService.instance.listGroupConversations();
+      items = (list ?? []).whereType<Map<String, dynamic>>().toList();
+      items.sort((a, b) {
+        final ta = DateTime.tryParse(a['updatedAt']?.toString() ?? '') ??
+            DateTime.fromMillisecondsSinceEpoch(0);
+        final tb = DateTime.tryParse(b['updatedAt']?.toString() ?? '') ??
+            DateTime.fromMillisecondsSinceEpoch(0);
+        return tb.compareTo(ta);
+      });
+      _lastReload = DateTime.now();
+      controller.add(items);
+      if (!silent) {
+        print('[GroupChats] loaded ${items.length} group conversations');
+      }
+    } catch (e) {
+      if (!silent) {
+        print('Group conversations load error: $e');
+      }
+    }
+  }
+
+  _load();
+  final sub = SocketService.instance.conversationUpdates
+      .listen((_) => _load(silent: true));
+  final subMsg = SocketService.instance.messages.listen((msg) {
+    try {
+      final cid = msg['conversationId']?.toString();
+      if (cid == null) return;
+      final idx = items.indexWhere((c) => c['id']?.toString() == cid);
+      if (idx != -1) {
+        items[idx]['lastMessageText'] =
+            msg['text']?.toString() ?? items[idx]['lastMessageText'];
+        items[idx]['updatedAt'] =
+            msg['createdAt']?.toString() ?? DateTime.now().toIso8601String();
+        items = List<Map<String, dynamic>>.from(items);
+        items.sort((a, b) {
+          final ta = DateTime.tryParse(a['updatedAt']?.toString() ?? '') ??
+              DateTime.fromMillisecondsSinceEpoch(0);
+          final tb = DateTime.tryParse(b['updatedAt']?.toString() ?? '') ??
+              DateTime.fromMillisecondsSinceEpoch(0);
+          return tb.compareTo(ta);
+        });
+        controller.add(items);
+      } else {
+        final now = DateTime.now();
+        if (now.difference(_lastReload).inMilliseconds > 1200) {
+          _load(silent: true);
+        }
+      }
+    } catch (_) {}
+  });
+
+  ref.onDispose(() {
+    sub.cancel();
+    subMsg.cancel();
+    controller.close();
+  });
+
+  return controller.stream;
+});
+
 /// Pulse group chat conversations stream. "Re-enabled" by broadening
 /// detection logic for conversations associated with a Pulse.
 /// Backends might use different keys; we accept several fallbacks.
@@ -170,6 +242,81 @@ final _pulseConversationsProvider = StreamProvider.autoDispose
 
 class _MessagesHubWidgetState extends State<MessagesHubWidget> {
   final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
+
+  // Activity status tracking
+  final Map<String, String> _userStatuses = {}; // userId -> status
+  StreamSubscription? _statusSubscription;
+
+  @override
+  void initState() {
+    super.initState();
+    _listenToStatusChanges();
+  }
+
+  @override
+  void dispose() {
+    _statusSubscription?.cancel();
+    super.dispose();
+  }
+
+  /// Listen for real-time activity status updates
+  void _listenToStatusChanges() {
+    _statusSubscription =
+        SocketService.instance.userStatusChanged.listen((data) {
+      final userId = data['userId'] as String?;
+      final status = data['status'] as String?;
+
+      if (userId != null && status != null) {
+        setState(() {
+          _userStatuses[userId] = status;
+        });
+      }
+    });
+  }
+
+  /// Load activity statuses for a list of user IDs
+  Future<void> _loadActivityStatuses(List<String> userIds) async {
+    if (userIds.isEmpty) return;
+
+    final statuses = await ApiService.instance.getActivityStatuses(userIds);
+    if (statuses != null && mounted) {
+      setState(() {
+        statuses.forEach((userId, statusData) {
+          if (statusData != null) {
+            _userStatuses[userId] = statusData['status'];
+          }
+        });
+      });
+    }
+  }
+
+  /// Build a status indicator widget
+  Widget _buildStatusIndicator(String? status) {
+    if (status == null) return const SizedBox.shrink();
+
+    Color color;
+    switch (status) {
+      case 'online':
+        color = Colors.green;
+        break;
+      case 'away':
+        color = Colors.orange;
+        break;
+      case 'offline':
+      default:
+        return const SizedBox.shrink(); // Don't show indicator for offline
+    }
+
+    return Container(
+      width: 12,
+      height: 12,
+      decoration: BoxDecoration(
+        color: color,
+        shape: BoxShape.circle,
+        border: Border.all(color: Colors.white, width: 2),
+      ),
+    );
+  }
 
   Widget _buildPulseGroupChatTile(BuildContext context,
       Map<String, dynamic> data, FlutterFlowTheme theme, String uid) {
@@ -279,6 +426,121 @@ class _MessagesHubWidgetState extends State<MessagesHubWidget> {
     );
   }
 
+  Widget _buildGroupChatTile(BuildContext context, Map<String, dynamic> data,
+      FlutterFlowTheme theme, String uid) {
+    final chatName = data['name']?.toString() ?? 'Group Chat';
+    final description = data['description']?.toString();
+    final lastMessage = (data['lastMessageText'] as String?) ?? '';
+    final updatedAt = DateTime.tryParse(data['updatedAt']?.toString() ?? '');
+    final avatarUrl = data['avatarUrl']?.toString();
+
+    // Get participant count
+    final List<dynamic> participants =
+        (data['participants'] as List<dynamic>? ?? []);
+    final participantCount = participants.length;
+
+    return Container(
+      margin: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+      decoration: BoxDecoration(
+        color: theme.secondaryBackground,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: theme.accent2.withOpacity(0.3), width: 1),
+      ),
+      child: ListTile(
+        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+        leading: Stack(
+          children: [
+            CircleAvatar(
+              backgroundColor: theme.accent2.withOpacity(0.1),
+              backgroundImage: avatarUrl != null && avatarUrl.isNotEmpty
+                  ? NetworkImage(avatarUrl)
+                  : null,
+              child: avatarUrl == null || avatarUrl.isEmpty
+                  ? Icon(
+                      Icons.people,
+                      color: theme.accent2,
+                      size: 24,
+                    )
+                  : null,
+            ),
+            if (participantCount > 0)
+              Positioned(
+                right: -2,
+                bottom: -2,
+                child: Container(
+                  padding: const EdgeInsets.all(2),
+                  decoration: BoxDecoration(
+                    color: theme.accent2,
+                    shape: BoxShape.circle,
+                    border:
+                        Border.all(color: theme.secondaryBackground, width: 2),
+                  ),
+                  constraints:
+                      const BoxConstraints(minWidth: 20, minHeight: 20),
+                  child: Center(
+                    child: Text(
+                      participantCount.toString(),
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 10,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+          ],
+        ),
+        title: Text(
+          chatName,
+          style: theme.titleSmall.override(fontWeight: FontWeight.w600),
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+        ),
+        subtitle: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            if (description != null && description.isNotEmpty)
+              Text(
+                description,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: theme.bodySmall.override(
+                  color: theme.secondaryText,
+                  fontSize: 11,
+                ),
+              ),
+            Text(
+              lastMessage.isNotEmpty ? lastMessage : 'No messages yet',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: theme.bodySmall.override(color: theme.secondaryText),
+            ),
+          ],
+        ),
+        trailing: updatedAt != null
+            ? Text(
+                dateTimeFormat('relative', updatedAt),
+                style: theme.bodySmall.override(color: theme.secondaryText),
+              )
+            : null,
+        onTap: () {
+          Navigator.of(context).push(MaterialPageRoute(
+              builder: (_) => GroupChatPage(
+                    chatId: data['id']?.toString() ?? '',
+                    groupName: chatName,
+                    groupDescription: description,
+                    groupAvatarUrl: avatarUrl,
+                    members: participants
+                        .whereType<Map<String, dynamic>>()
+                        .map((e) => e)
+                        .toList(),
+                  )));
+        },
+      ),
+    );
+  }
+
   Widget _buildDirectChatTile(BuildContext context, Map<String, dynamic> data,
       FlutterFlowTheme theme, String uid) {
     // Participants may be under participants/members/users
@@ -348,18 +610,57 @@ class _MessagesHubWidgetState extends State<MessagesHubWidget> {
         DateTime.tryParse(data['lastActivityAt']?.toString() ?? '') ??
         DateTime.fromMillisecondsSinceEpoch(0);
 
+    // Load status for this user if we don't have it
+    if (otherId.isNotEmpty && !_userStatuses.containsKey(otherId)) {
+      _loadActivityStatuses([otherId]);
+    }
+
+    final userStatus = _userStatuses[otherId];
+
     return ListTile(
       contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
-      leading: CircleAvatar(
-        backgroundImage:
-            otherPhoto.isNotEmpty ? NetworkImage(otherPhoto) : null,
-        child: otherPhoto.isEmpty ? const Icon(Icons.person) : null,
+      leading: Stack(
+        children: [
+          CircleAvatar(
+            backgroundImage:
+                otherPhoto.isNotEmpty ? NetworkImage(otherPhoto) : null,
+            child: otherPhoto.isEmpty ? const Icon(Icons.person) : null,
+          ),
+          Positioned(
+            right: 0,
+            bottom: 0,
+            child: _buildStatusIndicator(userStatus),
+          ),
+        ],
       ),
-      title: Text(
-        otherName,
-        style: theme.titleMedium,
-        maxLines: 1,
-        overflow: TextOverflow.ellipsis,
+      title: Row(
+        children: [
+          Expanded(
+            child: Text(
+              otherName,
+              style: theme.titleMedium,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+          if (userStatus == 'online')
+            Container(
+              margin: const EdgeInsets.only(left: 4),
+              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+              decoration: BoxDecoration(
+                color: Colors.green.withOpacity(0.1),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Text(
+                'Active',
+                style: theme.bodySmall.override(
+                  color: Colors.green,
+                  fontSize: 10,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ),
+        ],
       ),
       subtitle: Text(
         lastMessage.isNotEmpty ? lastMessage : 'Say hi 👋',
@@ -411,193 +712,243 @@ class _MessagesHubWidgetState extends State<MessagesHubWidget> {
                 final asyncConvos = ref.watch(_conversationsProvider(uid));
                 final asyncPulseConvos =
                     ref.watch(_pulseConversationsProvider(uid));
+                final asyncGroupConvos =
+                    ref.watch(_groupConversationsProvider(uid));
 
                 return asyncConvos.when(
                   data: (directChats) {
                     return asyncPulseConvos.when(
                       data: (pulseChats) {
-                        // Filter direct chats with robust classification
-                        final pulseIds = pulseChats
-                            .map((c) => c['id']?.toString())
-                            .whereType<String>()
-                            .toSet();
+                        return asyncGroupConvos.when(
+                          data: (groupChats) {
+                            // Filter direct chats with robust classification
+                            final pulseIds = pulseChats
+                                .map((c) => c['id']?.toString())
+                                .whereType<String>()
+                                .toSet();
 
-                        bool hasPulseMarker(Map<String, dynamic> conv) => [
-                              'pulseId',
-                              'pulse_id',
-                              'pulseID',
-                              'pulse',
-                              'pulseUuid'
-                            ].any((k) =>
-                                conv[k] != null &&
-                                conv[k].toString().isNotEmpty);
+                            bool hasPulseMarker(Map<String, dynamic> conv) => [
+                                  'pulseId',
+                                  'pulse_id',
+                                  'pulseID',
+                                  'pulse',
+                                  'pulseUuid'
+                                ].any((k) =>
+                                    conv[k] != null &&
+                                    conv[k].toString().isNotEmpty);
 
-                        List<dynamic> _parts(Map<String, dynamic> c) =>
-                            (c['participants'] as List?) ??
-                            (c['members'] as List?) ??
-                            (c['users'] as List?) ??
-                            const [];
+                            List<dynamic> _parts(Map<String, dynamic> c) =>
+                                (c['participants'] as List?) ??
+                                (c['members'] as List?) ??
+                                (c['users'] as List?) ??
+                                const [];
 
-                        bool isLikelyDirect(Map<String, dynamic> conv) {
-                          // Hard exclusions: any pulse-linked or group conversation is NOT a DM
-                          if (conv['isGroup'] == true) return false;
-                          if (hasPulseMarker(conv)) return false;
-                          final id = conv['id']?.toString();
-                          if (id != null && pulseIds.contains(id)) return false;
-                          // If it passes the exclusions above, treat it as a DM
-                          return true;
-                        }
-
-                        final filteredDirectChats =
-                            directChats.where(isLikelyDirect).toList();
-
-                        // Fallback 1: exactly two participants
-                        List<Map<String, dynamic>> fallbackTwoParticipant = [];
-                        if (filteredDirectChats.isEmpty) {
-                          fallbackTwoParticipant = directChats
-                              .where((c) {
-                                // Exclude pulse/groups even in fallback
-                                if (hasPulseMarker(c)) return false;
-                                if (c['isGroup'] == true) return false;
-                                final id = c['id']?.toString();
-                                if (id != null && pulseIds.contains(id))
-                                  return false;
-                                final parts = _parts(c);
-                                return parts.length ==
-                                    2; // treat as direct fallback
-                              })
-                              .map((e) => Map<String, dynamic>.from(e))
-                              .toList();
-                        }
-
-                        // Fallback 2: any non-pulse conversation that is not flagged as group
-                        List<Map<String, dynamic>> fallbackNonPulseNonGroup =
-                            [];
-                        if (filteredDirectChats.isEmpty &&
-                            fallbackTwoParticipant.isEmpty &&
-                            directChats.isNotEmpty) {
-                          fallbackNonPulseNonGroup = directChats
-                              .where((c) {
-                                if (hasPulseMarker(c)) return false;
-                                if (c['isGroup'] == true) return false;
-                                final id = c['id']?.toString();
-                                if (id != null && pulseIds.contains(id))
-                                  return false;
-                                return true;
-                              })
-                              .map((e) => Map<String, dynamic>.from(e))
-                              .toList();
-                        }
-
-                        final displayDirectChats =
-                            filteredDirectChats.isNotEmpty
-                                ? filteredDirectChats
-                                : (fallbackTwoParticipant.isNotEmpty
-                                    ? fallbackTwoParticipant
-                                    : fallbackNonPulseNonGroup);
-
-                        if (displayDirectChats.isEmpty &&
-                            directChats.isNotEmpty) {
-                          // Diagnostic logs (compact)
-                          // ignore: avoid_print
-                          print(
-                              '[DM-DIAG] No DMs after all fallbacks. totalConvos=' +
-                                  directChats.length.toString());
-                          for (final c in directChats.take(2)) {
-                            try {
-                              final id = (c['id'] ?? '').toString();
-                              final typeField =
-                                  (c['type'] ?? c['conversationType'])
-                                      ?.toString();
-                              final isGroup = c['isGroup'];
-                              final pulseMarker = hasPulseMarker(c);
-                              final partsLen = _parts(c).length;
-                              print('[DM-DIAG] id=' +
-                                  id +
-                                  ' type=' +
-                                  (typeField ?? '') +
-                                  ' isGroup=' +
-                                  (isGroup?.toString() ?? 'null') +
-                                  ' pulse=' +
-                                  pulseMarker.toString() +
-                                  ' participants=' +
-                                  partsLen.toString());
-                            } catch (_) {
-                              // ignore
+                            bool isLikelyDirect(Map<String, dynamic> conv) {
+                              // Hard exclusions: any pulse-linked or group conversation is NOT a DM
+                              if (conv['isGroup'] == true) return false;
+                              if (hasPulseMarker(conv)) return false;
+                              final id = conv['id']?.toString();
+                              if (id != null && pulseIds.contains(id))
+                                return false;
+                              // If it passes the exclusions above, treat it as a DM
+                              return true;
                             }
-                          }
-                        }
 
-                        if (displayDirectChats.isEmpty && pulseChats.isEmpty) {
-                          return Center(
+                            final filteredDirectChats =
+                                directChats.where(isLikelyDirect).toList();
+
+                            // Fallback 1: exactly two participants
+                            List<Map<String, dynamic>> fallbackTwoParticipant =
+                                [];
+                            if (filteredDirectChats.isEmpty) {
+                              fallbackTwoParticipant = directChats
+                                  .where((c) {
+                                    // Exclude pulse/groups even in fallback
+                                    if (hasPulseMarker(c)) return false;
+                                    if (c['isGroup'] == true) return false;
+                                    final id = c['id']?.toString();
+                                    if (id != null && pulseIds.contains(id))
+                                      return false;
+                                    final parts = _parts(c);
+                                    return parts.length ==
+                                        2; // treat as direct fallback
+                                  })
+                                  .map((e) => Map<String, dynamic>.from(e))
+                                  .toList();
+                            }
+
+                            // Fallback 2: any non-pulse conversation that is not flagged as group
+                            List<Map<String, dynamic>>
+                                fallbackNonPulseNonGroup = [];
+                            if (filteredDirectChats.isEmpty &&
+                                fallbackTwoParticipant.isEmpty &&
+                                directChats.isNotEmpty) {
+                              fallbackNonPulseNonGroup = directChats
+                                  .where((c) {
+                                    if (hasPulseMarker(c)) return false;
+                                    if (c['isGroup'] == true) return false;
+                                    final id = c['id']?.toString();
+                                    if (id != null && pulseIds.contains(id))
+                                      return false;
+                                    return true;
+                                  })
+                                  .map((e) => Map<String, dynamic>.from(e))
+                                  .toList();
+                            }
+
+                            final displayDirectChats =
+                                filteredDirectChats.isNotEmpty
+                                    ? filteredDirectChats
+                                    : (fallbackTwoParticipant.isNotEmpty
+                                        ? fallbackTwoParticipant
+                                        : fallbackNonPulseNonGroup);
+
+                            if (displayDirectChats.isEmpty &&
+                                directChats.isNotEmpty) {
+                              // Diagnostic logs (compact)
+                              // ignore: avoid_print
+                              print(
+                                  '[DM-DIAG] No DMs after all fallbacks. totalConvos=' +
+                                      directChats.length.toString());
+                              for (final c in directChats.take(2)) {
+                                try {
+                                  final id = (c['id'] ?? '').toString();
+                                  final typeField =
+                                      (c['type'] ?? c['conversationType'])
+                                          ?.toString();
+                                  final isGroup = c['isGroup'];
+                                  final pulseMarker = hasPulseMarker(c);
+                                  final partsLen = _parts(c).length;
+                                  print('[DM-DIAG] id=' +
+                                      id +
+                                      ' type=' +
+                                      (typeField ?? '') +
+                                      ' isGroup=' +
+                                      (isGroup?.toString() ?? 'null') +
+                                      ' pulse=' +
+                                      pulseMarker.toString() +
+                                      ' participants=' +
+                                      partsLen.toString());
+                                } catch (_) {
+                                  // ignore
+                                }
+                              }
+                            }
+
+                            if (displayDirectChats.isEmpty &&
+                                pulseChats.isEmpty &&
+                                groupChats.isEmpty) {
+                              return Center(
+                                child: Text(
+                                  'No conversations yet',
+                                  style: theme.bodyMedium
+                                      .override(color: theme.secondaryText),
+                                ),
+                              );
+                            }
+
+                            return ListView(
+                              children: [
+                                // Group Chats Section
+                                if (groupChats.isNotEmpty) ...[
+                                  Container(
+                                    padding: const EdgeInsets.fromLTRB(
+                                        16, 16, 16, 8),
+                                    child: Row(
+                                      children: [
+                                        Icon(
+                                          Icons.people,
+                                          color: theme.accent2,
+                                          size: 20,
+                                        ),
+                                        const SizedBox(width: 8),
+                                        Text(
+                                          'Group Chats',
+                                          style: theme.titleMedium.override(
+                                            fontWeight: FontWeight.w600,
+                                            color: theme.accent2,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                  ...groupChats.map((data) =>
+                                      _buildGroupChatTile(
+                                          context, data, theme, uid)),
+                                  if (pulseChats.isNotEmpty ||
+                                      displayDirectChats.isNotEmpty)
+                                    Divider(height: 24, color: theme.alternate),
+                                ],
+
+                                // Pulse Group Chats Section
+                                if (pulseChats.isNotEmpty) ...[
+                                  Container(
+                                    padding: const EdgeInsets.fromLTRB(
+                                        16, 16, 16, 8),
+                                    child: Row(
+                                      children: [
+                                        Icon(
+                                          Icons.group_rounded,
+                                          color: theme.primary,
+                                          size: 20,
+                                        ),
+                                        const SizedBox(width: 8),
+                                        Text(
+                                          'Pulse Group Chats',
+                                          style: theme.titleMedium.override(
+                                            fontWeight: FontWeight.w600,
+                                            color: theme.primary,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                  ...pulseChats.map((data) =>
+                                      _buildPulseGroupChatTile(
+                                          context, data, theme, uid)),
+                                  if (displayDirectChats.isNotEmpty)
+                                    Divider(height: 24, color: theme.alternate),
+                                ],
+
+                                // Direct Messages Section
+                                if (displayDirectChats.isNotEmpty) ...[
+                                  Container(
+                                    padding: const EdgeInsets.fromLTRB(
+                                        16, 16, 16, 8),
+                                    child: Row(
+                                      children: [
+                                        Icon(
+                                          Icons.chat_rounded,
+                                          color: theme.secondaryText,
+                                          size: 20,
+                                        ),
+                                        const SizedBox(width: 8),
+                                        Text(
+                                          'Direct Messages',
+                                          style: theme.titleMedium.override(
+                                            fontWeight: FontWeight.w600,
+                                            color: theme.secondaryText,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                  ...displayDirectChats.map((data) =>
+                                      _buildDirectChatTile(
+                                          context, data, theme, uid)),
+                                ],
+                              ],
+                            );
+                          },
+                          loading: () =>
+                              const Center(child: CircularProgressIndicator()),
+                          error: (_, __) => Center(
                             child: Text(
-                              'No conversations yet',
+                              'Failed to load group conversations',
                               style: theme.bodyMedium
                                   .override(color: theme.secondaryText),
                             ),
-                          );
-                        }
-
-                        return ListView(
-                          children: [
-                            // Pulse Group Chats Section
-                            if (pulseChats.isNotEmpty) ...[
-                              Container(
-                                padding:
-                                    const EdgeInsets.fromLTRB(16, 16, 16, 8),
-                                child: Row(
-                                  children: [
-                                    Icon(
-                                      Icons.group_rounded,
-                                      color: theme.primary,
-                                      size: 20,
-                                    ),
-                                    const SizedBox(width: 8),
-                                    Text(
-                                      'Pulse Group Chats',
-                                      style: theme.titleMedium.override(
-                                        fontWeight: FontWeight.w600,
-                                        color: theme.primary,
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                              ),
-                              ...pulseChats.map((data) =>
-                                  _buildPulseGroupChatTile(
-                                      context, data, theme, uid)),
-                              if (displayDirectChats.isNotEmpty)
-                                Divider(height: 24, color: theme.alternate),
-                            ],
-
-                            // Direct Messages Section
-                            if (displayDirectChats.isNotEmpty) ...[
-                              Container(
-                                padding:
-                                    const EdgeInsets.fromLTRB(16, 16, 16, 8),
-                                child: Row(
-                                  children: [
-                                    Icon(
-                                      Icons.chat_rounded,
-                                      color: theme.secondaryText,
-                                      size: 20,
-                                    ),
-                                    const SizedBox(width: 8),
-                                    Text(
-                                      'Direct Messages',
-                                      style: theme.titleMedium.override(
-                                        fontWeight: FontWeight.w600,
-                                        color: theme.secondaryText,
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                              ),
-                              ...displayDirectChats.map((data) =>
-                                  _buildDirectChatTile(
-                                      context, data, theme, uid)),
-                            ],
-                          ],
+                          ),
                         );
                       },
                       loading: () =>
@@ -626,43 +977,160 @@ class _MessagesHubWidgetState extends State<MessagesHubWidget> {
       ),
       floatingActionButton: uid.isEmpty
           ? null
-          : Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                FloatingActionButton.extended(
-                  heroTag: 'nearbyUsersFab',
-                  onPressed: () async {
-                    await showDialog(
-                      context: context,
-                      builder: (ctx) => const _NearbyUsersDialog(),
-                    );
-                  },
-                  icon: const Icon(Icons.radar_rounded),
-                  label: const Text('Find nearby'),
-                ),
-                const SizedBox(height: 12),
-                FloatingActionButton.extended(
-                  heroTag: 'newMessageFab',
-                  onPressed: () async {
-                    await showModalBottomSheet(
-                      context: context,
-                      isScrollControlled: true,
-                      useSafeArea: true,
-                      backgroundColor:
-                          FlutterFlowTheme.of(context).secondaryBackground,
-                      shape: const RoundedRectangleBorder(
-                        borderRadius:
-                            BorderRadius.vertical(top: Radius.circular(16)),
-                      ),
-                      builder: (ctx) => const _NewMessageSheet(),
-                    );
-                  },
-                  icon: const Icon(Icons.chat_bubble_outline_rounded),
-                  label: const Text('New message'),
+          : _CreateMessageFab(
+              onNewMessage: () async {
+                await showModalBottomSheet(
+                  context: context,
+                  isScrollControlled: true,
+                  useSafeArea: true,
+                  backgroundColor:
+                      FlutterFlowTheme.of(context).secondaryBackground,
+                  shape: const RoundedRectangleBorder(
+                    borderRadius:
+                        BorderRadius.vertical(top: Radius.circular(16)),
+                  ),
+                  builder: (ctx) => const _NewMessageSheet(),
+                );
+              },
+              onFindNearby: () async {
+                await showDialog(
+                  context: context,
+                  builder: (ctx) => const _NearbyUsersDialog(),
+                );
+              },
+              onCreateGroup: () async {
+                final result = await Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (_) => const CreateGroupChatPage(),
+                  ),
+                );
+                if (result != null && context.mounted) {
+                  setState(() {});
+                }
+              },
+            ),
+      bottomNavigationBar: const NavbarWidget(),
+    );
+  }
+}
+
+class _CreateMessageFab extends StatefulWidget {
+  const _CreateMessageFab({
+    required this.onNewMessage,
+    required this.onFindNearby,
+    required this.onCreateGroup,
+  });
+
+  final VoidCallback onNewMessage;
+  final VoidCallback onFindNearby;
+  final VoidCallback onCreateGroup;
+
+  @override
+  State<_CreateMessageFab> createState() => _CreateMessageFabState();
+}
+
+class _CreateMessageFabState extends State<_CreateMessageFab>
+    with SingleTickerProviderStateMixin {
+  bool _isOpen = false;
+
+  void _toggle() {
+    setState(() {
+      _isOpen = !_isOpen;
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = FlutterFlowTheme.of(context);
+
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.end,
+      children: [
+        // Speed dial options
+        if (_isOpen) ...[
+          _buildOption(
+            label: 'New group',
+            icon: Icons.group_add,
+            onTap: () {
+              _toggle();
+              widget.onCreateGroup();
+            },
+            backgroundColor: theme.accent2,
+          ),
+          const SizedBox(height: 12),
+          _buildOption(
+            label: 'Find nearby',
+            icon: Icons.radar_rounded,
+            onTap: () {
+              _toggle();
+              widget.onFindNearby();
+            },
+          ),
+          const SizedBox(height: 12),
+          _buildOption(
+            label: 'New message',
+            icon: Icons.chat_bubble_outline_rounded,
+            onTap: () {
+              _toggle();
+              widget.onNewMessage();
+            },
+          ),
+          const SizedBox(height: 12),
+        ],
+        // Main FAB
+        FloatingActionButton(
+          onPressed: _toggle,
+          child: AnimatedRotation(
+            duration: const Duration(milliseconds: 200),
+            turns: _isOpen ? 0.125 : 0,
+            child: Icon(_isOpen ? Icons.close : Icons.add),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildOption({
+    required String label,
+    required IconData icon,
+    required VoidCallback onTap,
+    Color? backgroundColor,
+  }) {
+    final theme = FlutterFlowTheme.of(context);
+
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Material(
+          color: Colors.transparent,
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+            decoration: BoxDecoration(
+              color: theme.secondaryBackground,
+              borderRadius: BorderRadius.circular(8),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withOpacity(0.1),
+                  blurRadius: 4,
+                  offset: const Offset(0, 2),
                 ),
               ],
             ),
-      bottomNavigationBar: const NavbarWidget(),
+            child: Text(
+              label,
+              style: theme.bodyMedium,
+            ),
+          ),
+        ),
+        const SizedBox(width: 12),
+        FloatingActionButton(
+          heroTag: 'fab_$label',
+          onPressed: onTap,
+          backgroundColor: backgroundColor,
+          child: Icon(icon),
+        ),
+      ],
     );
   }
 }

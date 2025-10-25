@@ -6,6 +6,7 @@ import 'package:permission_handler/permission_handler.dart';
 import '../auth/firebase_auth/auth_util.dart';
 import 'api_service.dart';
 import 'socket_service.dart';
+import 'ble_advertiser.dart';
 
 /// Transport modes supported for chat.
 enum ChatTransportMode { network, bluetooth }
@@ -23,7 +24,8 @@ abstract class IChatTransport {
       {required String conversationId,
       String? text,
       String? imageUrl,
-      String? videoUrl});
+      String? videoUrl,
+      String? repliedToId});
   void setTyping(String conversationId, bool isTyping);
   void addReaction(
       {required String conversationId,
@@ -58,12 +60,14 @@ class NetworkChatTransport implements IChatTransport {
           {required String conversationId,
           String? text,
           String? imageUrl,
-          String? videoUrl}) =>
+          String? videoUrl,
+          String? repliedToId}) =>
       _socket.sendMessage(
           conversationId: conversationId,
           text: text,
           imageUrl: imageUrl,
-          videoUrl: videoUrl);
+          videoUrl: videoUrl,
+          repliedToId: repliedToId);
 
   @override
   void setTyping(String conversationId, bool isTyping) =>
@@ -107,6 +111,8 @@ class BluetoothMeshChatTransport implements IChatTransport {
 
   StreamSubscription<List<ScanResult>>? _scanSub;
   final Set<String> _seenPeripheralIds = {};
+  final Map<String, BluetoothDevice> _connectedDevices = {};
+  final Map<String, StreamSubscription> _deviceSubscriptions = {};
 
   @override
   Stream<Map<String, dynamic>> get messages => _messages.stream;
@@ -121,9 +127,10 @@ class BluetoothMeshChatTransport implements IChatTransport {
     if (_started) return;
     _started = true;
     await _ensurePermissions();
-    // Kick off scanning; advertising is TODO (flutter_blue_plus currently provides scanning; advertising may need alt plugin on iOS).
+    // Kick off scanning for nearby devices
     _startScanning();
-    // TODO: implement advertising (may require a different plugin on some platforms). For now only passive receive possible.
+    // Start advertising our presence
+    await _startAdvertising();
   }
 
   @override
@@ -141,7 +148,8 @@ class BluetoothMeshChatTransport implements IChatTransport {
       {required String conversationId,
       String? text,
       String? imageUrl,
-      String? videoUrl}) {
+      String? videoUrl,
+      String? repliedToId}) {
     final msgId = 'bt_${DateTime.now().microsecondsSinceEpoch}';
     final map = <String, dynamic>{
       'id': msgId,
@@ -155,6 +163,7 @@ class BluetoothMeshChatTransport implements IChatTransport {
       'senderName': null,
       'senderPhotoUrl': null,
       'isSystemMessage': false,
+      'repliedTo': repliedToId,
     };
     _localStore.putIfAbsent(conversationId, () => []).add(map);
     _messages.add(map);
@@ -210,6 +219,31 @@ class BluetoothMeshChatTransport implements IChatTransport {
   @override
   Future<void> dispose() async {
     await _scanSub?.cancel();
+
+    // Stop advertising
+    await BleAdvertiser.stopAdvertising();
+
+    // Cancel all device subscriptions
+    for (final sub in _deviceSubscriptions.values) {
+      await sub.cancel();
+    }
+    _deviceSubscriptions.clear();
+
+    // Disconnect all devices
+    for (final device in _connectedDevices.values) {
+      try {
+        await device.disconnect();
+      } catch (e) {
+        if (kDebugMode) debugPrint('Error disconnecting device: $e');
+      }
+    }
+    _connectedDevices.clear();
+
+    // Stop scanning
+    try {
+      await FlutterBluePlus.stopScan();
+    } catch (_) {}
+
     await _messages.close();
     await _typing.close();
     await _conversationUpdates.close();
@@ -218,6 +252,8 @@ class BluetoothMeshChatTransport implements IChatTransport {
   void _startScanning() {
     if (_scanning) return;
     _scanning = true;
+    if (kDebugMode) debugPrint('🔍 Starting BLE scan...');
+
     // Ensure bluetooth on & permissions; errors ignored for prototype.
     FlutterBluePlus.startScan(
         timeout: const Duration(seconds: 0)); // unlimited until stopped
@@ -226,34 +262,115 @@ class BluetoothMeshChatTransport implements IChatTransport {
         final device = r.device;
         if (_seenPeripheralIds.add(device.remoteId.str)) {
           // First time seeing device: attempt to connect & discover services lazily.
+          if (kDebugMode) {
+            debugPrint(
+                '🆕 Discovered new device: ${device.remoteId} (${device.platformName})');
+          }
           _handleDiscovery(device);
         }
       }
     });
   }
 
+  Future<void> _startAdvertising() async {
+    // Check if advertising is supported
+    final isSupported = await BleAdvertiser.isSupported();
+
+    if (!isSupported) {
+      if (kDebugMode) {
+        debugPrint('⚠️ BLE Advertising not supported on this device');
+      }
+      return;
+    }
+
+    // Start advertising with our service UUID and current user ID
+    final success = await BleAdvertiser.startAdvertising(
+      serviceUuid: _serviceUuid.toString(),
+      userId: currentUserUid,
+    );
+
+    if (success) {
+      if (kDebugMode) {
+        debugPrint('✅ BLE Advertising started - device is now discoverable');
+      }
+    } else {
+      if (kDebugMode) {
+        debugPrint('❌ Failed to start BLE advertising');
+      }
+    }
+  }
+
   Future<void> _handleDiscovery(BluetoothDevice device) async {
     try {
+      // Check if already connected
+      if (_connectedDevices.containsKey(device.remoteId.str)) {
+        return;
+      }
+
+      if (kDebugMode) {
+        debugPrint('🔵 Connecting to device: ${device.remoteId}');
+      }
+
       await device.connect(timeout: const Duration(seconds: 8));
+
+      // Track connection
+      _connectedDevices[device.remoteId.str] = device;
+
+      // Listen for disconnections
+      final sub = device.connectionState.listen((state) {
+        if (state == BluetoothConnectionState.disconnected) {
+          if (kDebugMode) {
+            debugPrint('🔴 Device disconnected: ${device.remoteId}');
+          }
+          _connectedDevices.remove(device.remoteId.str);
+          _seenPeripheralIds.remove(device.remoteId.str);
+          _deviceSubscriptions[device.remoteId.str]?.cancel();
+          _deviceSubscriptions.remove(device.remoteId.str);
+        }
+      });
+      _deviceSubscriptions[device.remoteId.str] = sub;
+
       final services = await device.discoverServices();
       final matching = services.where((s) => s.uuid == _serviceUuid);
-      if (matching.isEmpty) return; // Not our service
-      for (final c in matching.expand((s) => s.characteristics)) {
-        if (c.uuid == _messageCharUuid || c.uuid == _typingCharUuid) {
-          if (c.properties.notify) {
-            await c.setNotifyValue(true);
-            c.onValueReceived.listen((data) => _handleIncomingPacket(data));
-          } else if (c.properties.read) {
-            // opportunistic read
-            final data = await c.read();
-            _handleIncomingPacket(data);
+      if (matching.isEmpty) {
+        if (kDebugMode) {
+          debugPrint('⚠️ Device does not have our service UUID');
+        }
+        await device.disconnect();
+        return;
+      }
+
+      if (kDebugMode) {
+        debugPrint('✅ Found matching service, setting up characteristics');
+      }
+
+      for (final service in matching) {
+        for (final c in service.characteristics) {
+          if (c.uuid == _messageCharUuid || c.uuid == _typingCharUuid) {
+            if (c.properties.notify) {
+              await c.setNotifyValue(true);
+              c.onValueReceived.listen((data) => _handleIncomingPacket(data));
+              if (kDebugMode) {
+                debugPrint('📡 Subscribed to characteristic: ${c.uuid}');
+              }
+            } else if (c.properties.read) {
+              // opportunistic read
+              final data = await c.read();
+              _handleIncomingPacket(data);
+            }
           }
         }
       }
     } catch (e) {
       if (kDebugMode) {
-        debugPrint('BLE discovery error: $e');
+        debugPrint('❌ BLE discovery error: $e');
       }
+      // Clean up on error
+      _connectedDevices.remove(device.remoteId.str);
+      _seenPeripheralIds.remove(device.remoteId.str);
+      try {
+        await device.disconnect();
+      } catch (_) {}
     }
   }
 
@@ -302,13 +419,86 @@ class BluetoothMeshChatTransport implements IChatTransport {
   }
 
   Future<void> _broadcastPacket(int type, String json) async {
-    // Placeholder: implement writing to connected characteristics (GATT write w/out response)
     final data = <int>[type, ...utf8.encode(json)];
-    try {
-      if (kDebugMode) debugPrint('BLE outbound packet bytes=${data.length}');
-      // Iterate connected devices and write (not yet tracking connections persistently) TODO.
-    } catch (e) {
-      if (kDebugMode) debugPrint('BLE broadcast error: $e');
+
+    if (_connectedDevices.isEmpty) {
+      if (kDebugMode) {
+        debugPrint(
+            '⚠️ No connected devices to broadcast to (${data.length} bytes)');
+      }
+      return;
+    }
+
+    if (kDebugMode) {
+      debugPrint(
+          '📤 Broadcasting ${data.length} bytes to ${_connectedDevices.length} device(s)');
+    }
+
+    final devicesCopy = List<BluetoothDevice>.from(_connectedDevices.values);
+
+    for (final device in devicesCopy) {
+      try {
+        // Discover services if not already done
+        final services = await device.discoverServices();
+        final service = services.firstWhere(
+          (s) => s.uuid == _serviceUuid,
+          orElse: () => throw Exception('Service not found'),
+        );
+
+        // Select characteristic based on packet type
+        final targetCharUuid = type == 0 ? _messageCharUuid : _typingCharUuid;
+        final char = service.characteristics.firstWhere(
+          (c) => c.uuid == targetCharUuid,
+          orElse: () => throw Exception('Characteristic not found'),
+        );
+
+        if (!char.properties.write && !char.properties.writeWithoutResponse) {
+          if (kDebugMode) {
+            debugPrint('⚠️ Characteristic not writable on ${device.remoteId}');
+          }
+          continue;
+        }
+
+        // BLE has MTU limitations (default 23 bytes, up to 512 with negotiation)
+        // Split data into chunks if needed
+        final mtu = await device.mtu.first;
+        final maxChunkSize = mtu - 3; // Account for ATT overhead
+
+        if (data.length <= maxChunkSize) {
+          // Send in one go
+          await char.write(data, withoutResponse: true);
+          if (kDebugMode) {
+            debugPrint('✅ Sent ${data.length} bytes to ${device.remoteId}');
+          }
+        } else {
+          // Send in chunks
+          if (kDebugMode) {
+            debugPrint('📦 Chunking ${data.length} bytes (MTU: $mtu)');
+          }
+          for (int i = 0; i < data.length; i += maxChunkSize) {
+            final end = (i + maxChunkSize < data.length)
+                ? i + maxChunkSize
+                : data.length;
+            final chunk = data.sublist(i, end);
+            await char.write(chunk, withoutResponse: true);
+            // Small delay between chunks to avoid overwhelming receiver
+            await Future.delayed(const Duration(milliseconds: 10));
+          }
+          if (kDebugMode) {
+            debugPrint(
+                '✅ Sent ${data.length} bytes in chunks to ${device.remoteId}');
+          }
+        }
+      } catch (e) {
+        if (kDebugMode) {
+          debugPrint('❌ Broadcast error to ${device.remoteId}: $e');
+        }
+        // If device is unreachable, remove from connected list
+        if (e.toString().contains('disconnected') ||
+            e.toString().contains('not connected')) {
+          _connectedDevices.remove(device.remoteId.str);
+        }
+      }
     }
   }
 }

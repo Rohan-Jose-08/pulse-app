@@ -313,9 +313,39 @@ class _PulseGridCard extends StatelessWidget {
 
   final ExplorePulse pulse;
 
+  String _getPulseStatus() {
+    try {
+      final now = DateTime.now();
+
+      if (pulse.activeUntil != null && now.isAfter(pulse.activeUntil!)) {
+        return 'ENDED';
+      }
+
+      if (pulse.activeFrom != null) {
+        if (now.isBefore(pulse.activeFrom!)) {
+          return 'SOON';
+        }
+        if (pulse.activeUntil != null &&
+            now.isAfter(pulse.activeFrom!) &&
+            now.isBefore(pulse.activeUntil!)) {
+          return 'LIVE';
+        } else if (pulse.activeUntil == null &&
+            now.isAfter(pulse.activeFrom!)) {
+          return 'LIVE';
+        }
+      }
+    } catch (_) {
+      // Error parsing dates, return LIVE as default
+    }
+    return 'LIVE';
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = FlutterFlowTheme.of(context);
+    final pulseStatus = _getPulseStatus();
+    final isExpired = pulseStatus == 'ENDED';
+
     bool isValidNetworkUrl(String url) {
       if (url.isEmpty) return false;
       final uri = Uri.tryParse(url);
@@ -324,79 +354,128 @@ class _PulseGridCard extends StatelessWidget {
           (uri.host.isNotEmpty);
     }
 
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(14),
-      child: Stack(
-        children: [
-          AspectRatio(
-            aspectRatio: 1,
-            child: isValidNetworkUrl(pulse.imageUrl)
-                ? Image.network(
-                    pulse.imageUrl,
-                    fit: BoxFit.cover,
-                    errorBuilder: (_, __, ___) =>
-                        Container(color: theme.alternate),
-                  )
-                : Container(color: theme.alternate),
-          ),
-          Positioned(
-            left: 8,
-            right: 8,
-            bottom: 8,
-            child: Container(
-              padding: const EdgeInsets.all(8),
-              decoration: BoxDecoration(
-                color: Colors.black54,
-                borderRadius: BorderRadius.circular(10),
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Text(
-                    pulse.title,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                        color: Colors.white, fontWeight: FontWeight.w600),
-                  ),
-                  const SizedBox(height: 2),
-                  Text(
-                    pulse.location,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(color: Colors.white70, fontSize: 12),
-                  ),
-                ],
+    return Opacity(
+      opacity: isExpired ? 0.5 : 1.0,
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(14),
+        child: Stack(
+          children: [
+            AspectRatio(
+              aspectRatio: 1,
+              child: ColorFiltered(
+                colorFilter: isExpired
+                    ? ColorFilter.mode(
+                        Colors.grey,
+                        BlendMode.saturation,
+                      )
+                    : ColorFilter.mode(
+                        Colors.transparent,
+                        BlendMode.multiply,
+                      ),
+                child: isValidNetworkUrl(pulse.imageUrl)
+                    ? Image.network(
+                        pulse.imageUrl,
+                        fit: BoxFit.cover,
+                        errorBuilder: (_, __, ___) =>
+                            Container(color: theme.alternate),
+                      )
+                    : Container(
+                        color: isExpired ? Colors.grey : theme.alternate),
               ),
             ),
-          ),
-          Positioned.fill(
-            child: Material(
-              color: Colors.transparent,
-              child: InkWell(
-                onTap: () {
-                  context.pushNamed(
-                    PulseDetailPage.routeName,
-                    pathParameters: {'id': pulse.id},
-                    extra: {
-                      'pulse': {
-                        'id': pulse.id,
-                        'title': pulse.title,
-                        'imageUrl': pulse.imageUrl,
-                        'location': pulse.location,
-                        'hostUsername': pulse.hostUsername,
-                        'eventTime': pulse.time?.toIso8601String(),
-                        'latitude': pulse.latitude,
-                        'longitude': pulse.longitude,
-                      }
-                    },
-                  );
-                },
+            // Expired badge
+            if (isExpired)
+              Positioned(
+                top: 8,
+                right: 8,
+                child: Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: Colors.grey.shade700,
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: const [
+                      Icon(
+                        Icons.event_busy_rounded,
+                        size: 12,
+                        color: Colors.white,
+                      ),
+                      SizedBox(width: 4),
+                      Text(
+                        'ENDED',
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontSize: 10,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            Positioned(
+              left: 8,
+              right: 8,
+              bottom: 8,
+              child: Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: Colors.black54,
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      pulse.title,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                          color: Colors.white, fontWeight: FontWeight.w600),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      pulse.location,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style:
+                          const TextStyle(color: Colors.white70, fontSize: 12),
+                    ),
+                  ],
+                ),
               ),
             ),
-          ),
-        ],
+            Positioned.fill(
+              child: Material(
+                color: Colors.transparent,
+                child: InkWell(
+                  onTap: () {
+                    context.pushNamed(
+                      PulseDetailPage.routeName,
+                      pathParameters: {'id': pulse.id},
+                      extra: {
+                        'pulse': {
+                          'id': pulse.id,
+                          'title': pulse.title,
+                          'imageUrl': pulse.imageUrl,
+                          'location': pulse.location,
+                          'hostUsername': pulse.hostUsername,
+                          'eventTime': pulse.time?.toIso8601String(),
+                          'latitude': pulse.latitude,
+                          'longitude': pulse.longitude,
+                        }
+                      },
+                    );
+                  },
+                ),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }

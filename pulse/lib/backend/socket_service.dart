@@ -17,6 +17,8 @@ class SocketService {
       StreamController<Map<String, dynamic>>.broadcast();
   final _ackController = StreamController<Map<String, dynamic>>.broadcast();
   final _errorController = StreamController<Map<String, dynamic>>.broadcast();
+  final _messageStatusController =
+      StreamController<Map<String, dynamic>>.broadcast();
   final List<Map<String, dynamic>> _pendingEmits = [];
   final Set<String> _joinedRooms = <String>{};
 
@@ -36,12 +38,17 @@ class SocketService {
   final _gcParticipantLeft = StreamController<Map<String, dynamic>>.broadcast();
   final _gcSignal = StreamController<Map<String, dynamic>>.broadcast();
 
+  // --- Activity status streams ---
+  final _userStatusChanged = StreamController<Map<String, dynamic>>.broadcast();
+
   Stream<Map<String, dynamic>> get messages => _messageController.stream;
   Stream<Map<String, dynamic>> get typing => _typingController.stream;
   Stream<Map<String, dynamic>> get conversationUpdates =>
       _conversationUpdated.stream;
   Stream<Map<String, dynamic>> get acks => _ackController.stream;
   Stream<Map<String, dynamic>> get errors => _errorController.stream;
+  Stream<Map<String, dynamic>> get messageStatusUpdates =>
+      _messageStatusController.stream;
   Stream<Map<String, dynamic>> get callIncoming => _callIncoming.stream;
   Stream<Map<String, dynamic>> get callOffer => _callOffer.stream;
   Stream<Map<String, dynamic>> get callAnswer => _callAnswer.stream;
@@ -57,6 +64,9 @@ class SocketService {
   Stream<Map<String, dynamic>> get groupCallParticipantLeft =>
       _gcParticipantLeft.stream;
   Stream<Map<String, dynamic>> get groupCallSignal => _gcSignal.stream;
+  // Activity status
+  Stream<Map<String, dynamic>> get userStatusChanged =>
+      _userStatusChanged.stream;
 
   bool get isConnected => _socket?.connected == true;
 
@@ -141,6 +151,10 @@ class SocketService {
         (data) => _ackController.add(Map<String, dynamic>.from(data)));
     _socket!.on('message:error',
         (data) => _errorController.add(Map<String, dynamic>.from(data)));
+    _socket!.on(
+        'message:status-update',
+        (data) =>
+            _messageStatusController.add(Map<String, dynamic>.from(data)));
     _socket!.on('typing',
         (data) => _typingController.add(Map<String, dynamic>.from(data)));
     _socket!.on('conversation:updated',
@@ -169,6 +183,9 @@ class SocketService {
         (data) => _gcParticipantLeft.add(Map<String, dynamic>.from(data)));
     _socket!.on('groupcall:signal',
         (data) => _gcSignal.add(Map<String, dynamic>.from(data)));
+    // Activity status events
+    _socket!.on('user:status',
+        (data) => _userStatusChanged.add(Map<String, dynamic>.from(data)));
     _socket!.onError((e) {
       _isConnecting = false;
       // ignore: avoid_print
@@ -271,12 +288,14 @@ class SocketService {
       {required String conversationId,
       String? text,
       String? imageUrl,
-      String? videoUrl}) {
+      String? videoUrl,
+      String? repliedToId}) {
     _emitOrQueue('message:send', {
       'conversationId': conversationId,
       'text': text,
       'imageUrl': imageUrl,
       'videoUrl': videoUrl,
+      if (repliedToId != null) 'repliedToId': repliedToId,
     });
   }
 
@@ -339,6 +358,26 @@ class SocketService {
       'conversationId': conversationId,
       'messageId': messageId,
       'emoji': emoji,
+    });
+  }
+
+  void markMessageDelivered({
+    required String conversationId,
+    required String messageId,
+  }) {
+    _emitOrQueue('message:delivered', {
+      'conversationId': conversationId,
+      'messageId': messageId,
+    });
+  }
+
+  void markMessageRead({
+    required String conversationId,
+    required String messageId,
+  }) {
+    _emitOrQueue('message:read', {
+      'conversationId': conversationId,
+      'messageId': messageId,
     });
   }
 

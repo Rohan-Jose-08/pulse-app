@@ -3,6 +3,9 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../flutter_flow/flutter_flow_theme.dart';
 import '../pulse_detail/pulse_detail_page.dart';
 import '../messaging/enhanced_messaging_page.dart';
+import '../highlights/highlight_viewer_page.dart';
+import '../highlights/manage_highlight_page.dart';
+import '../../components/highlights_row.dart';
 import '../../backend/api_service.dart';
 import '../../backend/socket_service.dart';
 
@@ -337,6 +340,20 @@ class _ProfilePageState extends ConsumerState<ProfilePage>
                 isFollowing: ref.watch(_isFollowingProvider(profile.id)),
               ),
               _StatsRow(profile: profile),
+              // Highlights row
+              HighlightsRow(
+                userId: profile.id,
+                isOwnProfile: false,
+                onHighlightTap: (highlight) {
+                  Navigator.of(context).push(
+                    MaterialPageRoute(
+                      builder: (_) => HighlightViewerPage(
+                        highlightId: highlight['id'] as String,
+                      ),
+                    ),
+                  );
+                },
+              ),
               _Tabs(theme: theme, controller: _tabController),
               Expanded(
                 child: TabBarView(

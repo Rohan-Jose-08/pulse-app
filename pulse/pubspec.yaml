@@ -48,6 +48,9 @@ dependencies:
   firebase_storage: 12.4.7
   firebase_app_check: 0.3.0+1
   image_picker: 1.1.2
+  camera: ^0.10.5+9
+  video_player: ^2.8.2
+  video_thumbnail: ^0.5.3
   flutter_animate: 4.5.0
   flutter_cache_manager: 3.4.1
   flutter_google_places: 

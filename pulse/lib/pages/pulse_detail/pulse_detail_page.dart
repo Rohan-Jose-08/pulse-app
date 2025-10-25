@@ -5,6 +5,7 @@ import '/flutter_flow/flutter_flow_widgets.dart';
 import '/flutter_flow/flutter_flow_icon_button.dart';
 import '/pages/messaging/live_group_chat_page.dart';
 import '/pages/edit_pulse/edit_pulse_widget.dart';
+import '/pages/highlights/video_capture_page.dart';
 import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
@@ -432,6 +433,101 @@ class _PulseDetailPageState extends State<PulseDetailPage>
         },
       ),
       actions: [
+        // Camera button for creating video highlights
+        FlutterFlowIconButton(
+          borderColor: Colors.transparent,
+          borderRadius: 30,
+          borderWidth: 1,
+          buttonSize: 44,
+          fillColor: Colors.black.withOpacity(0.6),
+          icon: Icon(
+            Icons.videocam_rounded,
+            color: Colors.white,
+            size: 24,
+          ),
+          onPressed: () async {
+            // Check if pulse is active based on activeFrom and activeUntil
+            final pulse = _model.pulseData;
+            if (pulse == null) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(
+                  content: Text('Pulse data not loaded'),
+                  backgroundColor: FlutterFlowTheme.of(context).error,
+                ),
+              );
+              return;
+            }
+
+            // Parse active window
+            final now = DateTime.now();
+            DateTime? activeFrom;
+            DateTime? activeUntil;
+
+            if (pulse['activeFrom'] != null) {
+              activeFrom = DateTime.tryParse(pulse['activeFrom'].toString());
+            }
+            if (pulse['activeUntil'] != null) {
+              activeUntil = DateTime.tryParse(pulse['activeUntil'].toString());
+            }
+
+            // Check if pulse is currently active
+            bool isActive = false;
+            if (activeFrom != null) {
+              // Pulse is active if we're after activeFrom
+              isActive = now.isAfter(activeFrom);
+
+              // And if activeUntil is set, we must be before it
+              if (activeUntil != null) {
+                isActive = isActive && now.isBefore(activeUntil);
+              }
+            }
+
+            if (isActive) {
+              // Navigate to video capture page
+              final result = await Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (context) => VideoCapturePage(
+                    pulseId: widget.pulseId,
+                    pulseName: pulse['title'] ?? pulse['name'] ?? 'Pulse',
+                  ),
+                ),
+              );
+
+              // Reload pulse if highlight was created
+              if (result == true) {
+                _loadPulseDetails();
+              }
+            } else {
+              String message =
+                  'You can only create highlights during an active pulse';
+
+              if (activeFrom != null && now.isBefore(activeFrom)) {
+                final timeUntil = activeFrom.difference(now);
+                if (timeUntil.inDays > 0) {
+                  message =
+                      'Pulse starts in ${timeUntil.inDays} day${timeUntil.inDays > 1 ? 's' : ''}';
+                } else if (timeUntil.inHours > 0) {
+                  message =
+                      'Pulse starts in ${timeUntil.inHours} hour${timeUntil.inHours > 1 ? 's' : ''}';
+                } else {
+                  message =
+                      'Pulse starts in ${timeUntil.inMinutes} minute${timeUntil.inMinutes > 1 ? 's' : ''}';
+                }
+              } else if (activeUntil != null && now.isAfter(activeUntil)) {
+                message = 'This pulse has ended';
+              }
+
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(
+                  content: Text(message),
+                  backgroundColor: FlutterFlowTheme.of(context).error,
+                ),
+              );
+            }
+          },
+        ),
+        const SizedBox(width: 8),
         FlutterFlowIconButton(
           borderColor: Colors.transparent,
           borderRadius: 30,
@@ -754,8 +850,9 @@ class _PulseDetailPageState extends State<PulseDetailPage>
     FlutterFlowTheme theme,
     IconData icon,
     String label,
-    String value,
-  ) {
+    String value, {
+    Color? valueColor,
+  }) {
     return Row(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -778,7 +875,9 @@ class _PulseDetailPageState extends State<PulseDetailPage>
               const SizedBox(height: 2),
               Text(
                 value,
-                style: theme.bodyMedium,
+                style: theme.bodyMedium.copyWith(
+                  color: valueColor,
+                ),
               ),
             ],
           ),

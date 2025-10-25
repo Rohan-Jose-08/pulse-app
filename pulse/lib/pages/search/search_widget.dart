@@ -14,7 +14,7 @@ import 'package:shimmer/shimmer.dart';
 import 'package:flutter_staggered_animations/flutter_staggered_animations.dart';
 import 'package:haptic_feedback/haptic_feedback.dart';
 import 'package:flutter_animate/flutter_animate.dart';
-import '../notifications/notifications_page.dart';
+import '../pulse_invitations/pulse_invitations_page.dart';
 import 'search_model.dart';
 export 'search_model.dart';
 
@@ -55,9 +55,7 @@ class _SearchWidgetState extends State<SearchWidget>
 
   // Animation controllers
   late AnimationController _headerAnimationController;
-  late AnimationController _fabAnimationController;
   late Animation<double> _headerAnimation;
-  late Animation<double> _fabAnimation;
 
   final scaffoldKey = GlobalKey<ScaffoldState>();
 
@@ -102,6 +100,47 @@ class _SearchWidgetState extends State<SearchWidget>
     return 'Location TBD';
   }
 
+  // Helper function to check if pulse is expired
+  String _getPulseStatus(Map<String, dynamic> pulse) {
+    try {
+      final now = DateTime.now();
+      final activeFromStr = pulse['activeFrom']?.toString();
+      final activeUntilStr = pulse['activeUntil']?.toString();
+
+      if (activeUntilStr != null && activeUntilStr.isNotEmpty) {
+        final activeUntil = DateTime.tryParse(activeUntilStr);
+        if (activeUntil != null && now.isAfter(activeUntil)) {
+          return 'ENDED';
+        }
+      }
+
+      if (activeFromStr != null && activeFromStr.isNotEmpty) {
+        final activeFrom = DateTime.tryParse(activeFromStr);
+        if (activeFrom != null) {
+          if (now.isBefore(activeFrom)) {
+            return 'SOON';
+          }
+          if (activeUntilStr != null && activeUntilStr.isNotEmpty) {
+            final activeUntil = DateTime.tryParse(activeUntilStr);
+            if (activeUntil != null &&
+                now.isAfter(activeFrom) &&
+                now.isBefore(activeUntil)) {
+              return 'LIVE';
+            }
+          } else {
+            // If no activeUntil, check if activeFrom is in the past
+            if (now.isAfter(activeFrom)) {
+              return 'LIVE';
+            }
+          }
+        }
+      }
+    } catch (_) {
+      // Error parsing dates, return LIVE as default
+    }
+    return 'LIVE'; // Default status
+  }
+
   @override
   void initState() {
     super.initState();
@@ -113,24 +152,13 @@ class _SearchWidgetState extends State<SearchWidget>
       duration: Duration(milliseconds: 800),
     );
 
-    _fabAnimationController = AnimationController(
-      vsync: this,
-      duration: Duration(milliseconds: 300),
-    );
-
     _headerAnimation = CurvedAnimation(
       parent: _headerAnimationController,
       curve: Curves.easeOutCubic,
     );
 
-    _fabAnimation = CurvedAnimation(
-      parent: _fabAnimationController,
-      curve: Curves.easeInOutCubic,
-    );
-
     // Start animations
     _headerAnimationController.forward();
-    _fabAnimationController.forward();
 
     // Initialize data
     _initializeData();
@@ -493,7 +521,6 @@ class _SearchWidgetState extends State<SearchWidget>
     _mainScrollController.dispose();
     _storiesController.dispose();
     _headerAnimationController.dispose();
-    _fabAnimationController.dispose();
     super.dispose();
   }
 
@@ -566,9 +593,6 @@ class _SearchWidgetState extends State<SearchWidget>
                   ],
                 ),
               ),
-              // Floating Action Buttons
-              _buildFloatingActionButtons(),
-
               // Navbar
               Align(
                 alignment: AlignmentDirectional(0.0, 1.0),
@@ -628,7 +652,7 @@ class _SearchWidgetState extends State<SearchWidget>
                     ],
                   ),
 
-                  // Actions: Notifications + Search
+                  // Actions: Invitations + Search
                   Row(
                     children: [
                       Container(
@@ -647,15 +671,16 @@ class _SearchWidgetState extends State<SearchWidget>
                         ),
                         child: IconButton(
                           icon: Icon(
-                            Icons.notifications_none_rounded,
-                            color: FlutterFlowTheme.of(context).primaryText,
+                            Icons.mail_outline_rounded,
+                            color: FlutterFlowTheme.of(context).primary,
                             size: 24,
                           ),
+                          tooltip: 'Invitations',
                           onPressed: () async {
                             await Haptics.vibrate(HapticsType.selection);
                             Navigator.of(context).push(
                               MaterialPageRoute(
-                                builder: (_) => const NotificationsPage(),
+                                builder: (_) => const PulseInvitationsPage(),
                               ),
                             );
                           },
@@ -903,201 +928,275 @@ class _SearchWidgetState extends State<SearchWidget>
   }
 
   Widget _buildForYouCard(Map<String, dynamic> pulse, int index) {
+    final pulseStatus = _getPulseStatus(pulse);
+    final isExpired = pulseStatus == 'ENDED';
+
     return Container(
       width: 300,
       margin: EdgeInsets.only(right: 16),
-      child: InkWell(
-        onTap: () async {
-          await Haptics.vibrate(HapticsType.selection);
-          _navigateToPulseDetail(pulse);
-        },
-        borderRadius: BorderRadius.circular(24),
-        child: Container(
-          decoration: BoxDecoration(
-            color: FlutterFlowTheme.of(context).secondaryBackground,
-            borderRadius: BorderRadius.circular(24),
-            boxShadow: [
-              BoxShadow(
-                blurRadius: 20,
-                color: Colors.black.withOpacity(0.1),
-                offset: Offset(0, 10),
-              ),
-            ],
-          ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              // Image with gradient overlay
-              Container(
-                height: 160,
-                child: Stack(
-                  children: [
-                    ClipRRect(
-                      borderRadius: BorderRadius.only(
-                        topLeft: Radius.circular(24),
-                        topRight: Radius.circular(24),
-                      ),
-                      child: Container(
-                        width: double.infinity,
-                        height: 160,
-                        color: FlutterFlowTheme.of(context)
-                            .primary
-                            .withOpacity(0.3),
-                        child: pulse['imageUrl'] != null
-                            ? Image.network(
-                                pulse['imageUrl'],
-                                fit: BoxFit.cover,
-                                errorBuilder: (context, error, stackTrace) {
-                                  return Center(
+      child: Opacity(
+        opacity: isExpired ? 0.5 : 1.0,
+        child: InkWell(
+          onTap: () async {
+            await Haptics.vibrate(HapticsType.selection);
+            _navigateToPulseDetail(pulse);
+          },
+          borderRadius: BorderRadius.circular(24),
+          child: Container(
+            decoration: BoxDecoration(
+              color: FlutterFlowTheme.of(context).secondaryBackground,
+              borderRadius: BorderRadius.circular(24),
+              boxShadow: [
+                BoxShadow(
+                  blurRadius: 20,
+                  color: Colors.black.withOpacity(0.1),
+                  offset: Offset(0, 10),
+                ),
+              ],
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                // Image with gradient overlay
+                Container(
+                  height: 160,
+                  child: Stack(
+                    children: [
+                      ClipRRect(
+                        borderRadius: BorderRadius.only(
+                          topLeft: Radius.circular(24),
+                          topRight: Radius.circular(24),
+                        ),
+                        child: Container(
+                          width: double.infinity,
+                          height: 160,
+                          color: isExpired
+                              ? Colors.grey.withOpacity(0.3)
+                              : FlutterFlowTheme.of(context)
+                                  .primary
+                                  .withOpacity(0.3),
+                          child: ColorFiltered(
+                            colorFilter: isExpired
+                                ? ColorFilter.mode(
+                                    Colors.grey,
+                                    BlendMode.saturation,
+                                  )
+                                : ColorFilter.mode(
+                                    Colors.transparent,
+                                    BlendMode.multiply,
+                                  ),
+                            child: pulse['imageUrl'] != null
+                                ? Image.network(
+                                    pulse['imageUrl'],
+                                    fit: BoxFit.cover,
+                                    errorBuilder: (context, error, stackTrace) {
+                                      return Center(
+                                        child: Icon(
+                                          Icons.event_rounded,
+                                          size: 60,
+                                          color: Colors.white,
+                                        ),
+                                      );
+                                    },
+                                  )
+                                : Center(
                                     child: Icon(
                                       Icons.event_rounded,
                                       size: 60,
                                       color: Colors.white,
                                     ),
-                                  );
-                                },
-                              )
-                            : Center(
-                                child: Icon(
-                                  Icons.event_rounded,
-                                  size: 60,
-                                  color: Colors.white,
+                                  ),
+                          ),
+                        ),
+                      ),
+                      // Gradient overlay
+                      Positioned.fill(
+                        child: Container(
+                          decoration: BoxDecoration(
+                            borderRadius: BorderRadius.only(
+                              topLeft: Radius.circular(24),
+                              topRight: Radius.circular(24),
+                            ),
+                            gradient: LinearGradient(
+                              begin: Alignment.topCenter,
+                              end: Alignment.bottomCenter,
+                              colors: [
+                                Colors.transparent,
+                                Colors.black.withOpacity(0.7),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
+                      // Tags on image
+                      Positioned(
+                        top: 12,
+                        left: 12,
+                        child: Container(
+                          padding:
+                              EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                          decoration: BoxDecoration(
+                            color: isExpired
+                                ? Colors.grey.withOpacity(0.9)
+                                : Colors.white.withOpacity(0.9),
+                            borderRadius: BorderRadius.circular(20),
+                          ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(
+                                isExpired
+                                    ? Icons.event_busy_rounded
+                                    : Icons.auto_awesome,
+                                size: 16,
+                                color: isExpired
+                                    ? Colors.white
+                                    : FlutterFlowTheme.of(context).primary,
+                              ),
+                              SizedBox(width: 4),
+                              Text(
+                                isExpired ? 'Ended' : 'Recommended',
+                                style: TextStyle(
+                                  color: isExpired
+                                      ? Colors.white
+                                      : FlutterFlowTheme.of(context).primary,
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w600,
                                 ),
                               ),
-                      ),
-                    ),
-                    // Gradient overlay
-                    Positioned.fill(
-                      child: Container(
-                        decoration: BoxDecoration(
-                          borderRadius: BorderRadius.only(
-                            topLeft: Radius.circular(24),
-                            topRight: Radius.circular(24),
-                          ),
-                          gradient: LinearGradient(
-                            begin: Alignment.topCenter,
-                            end: Alignment.bottomCenter,
-                            colors: [
-                              Colors.transparent,
-                              Colors.black.withOpacity(0.7),
                             ],
                           ),
                         ),
                       ),
-                    ),
-                    // Tags on image
-                    Positioned(
-                      top: 12,
-                      left: 12,
-                      child: Container(
-                        padding:
-                            EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                        decoration: BoxDecoration(
-                          color: Colors.white.withOpacity(0.9),
-                          borderRadius: BorderRadius.circular(20),
-                        ),
-                        child: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Icon(
-                              Icons.auto_awesome,
-                              size: 16,
-                              color: FlutterFlowTheme.of(context).primary,
-                            ),
-                            SizedBox(width: 4),
-                            Text(
-                              'Recommended',
-                              style: TextStyle(
-                                color: FlutterFlowTheme.of(context).primary,
-                                fontSize: 12,
-                                fontWeight: FontWeight.w600,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ),
-                    // Save button
-                    Positioned(
-                      top: 12,
-                      right: 12,
-                      child: Container(
-                        decoration: BoxDecoration(
-                          color: Colors.black.withOpacity(0.5),
-                          shape: BoxShape.circle,
-                        ),
-                        child: IconButton(
-                          icon: Icon(
-                            Icons.bookmark_border_rounded,
-                            color: Colors.white,
-                            size: 20,
+                      // Save button
+                      Positioned(
+                        top: 12,
+                        right: 12,
+                        child: Container(
+                          decoration: BoxDecoration(
+                            color: Colors.black.withOpacity(0.5),
+                            shape: BoxShape.circle,
                           ),
-                          onPressed: () async {
-                            await Haptics.vibrate(HapticsType.selection);
-                          },
+                          child: IconButton(
+                            icon: Icon(
+                              Icons.bookmark_border_rounded,
+                              color: Colors.white,
+                              size: 20,
+                            ),
+                            onPressed: () async {
+                              await Haptics.vibrate(HapticsType.selection);
+                            },
+                          ),
                         ),
                       ),
-                    ),
-                  ],
+                    ],
+                  ),
                 ),
-              ),
-              // Content
-              Expanded(
-                child: Padding(
-                  padding: EdgeInsets.all(16),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            pulse['title'] ?? 'Untitled Event',
-                            style: FlutterFlowTheme.of(context)
-                                .titleMedium
-                                .override(
-                                  font: GoogleFonts.interTight(
-                                    fontWeight: FontWeight.bold,
+                // Content
+                Expanded(
+                  child: Padding(
+                    padding: EdgeInsets.all(16),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              pulse['title'] ?? 'Untitled Event',
+                              style: FlutterFlowTheme.of(context)
+                                  .titleMedium
+                                  .override(
+                                    font: GoogleFonts.interTight(
+                                      fontWeight: FontWeight.bold,
+                                    ),
                                   ),
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                            SizedBox(height: 4),
+                            Row(
+                              children: [
+                                Icon(
+                                  Icons.location_on_outlined,
+                                  size: 16,
+                                  color: FlutterFlowTheme.of(context)
+                                      .secondaryText,
                                 ),
-                            maxLines: 2,
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                          SizedBox(height: 4),
-                          Row(
-                            children: [
-                              Icon(
-                                Icons.location_on_outlined,
-                                size: 16,
-                                color:
-                                    FlutterFlowTheme.of(context).secondaryText,
-                              ),
-                              SizedBox(width: 4),
-                              Expanded(
-                                child: FutureBuilder<String?>(
-                                  future: () async {
-                                    final lat = pulse['latitude'] is String
-                                        ? double.tryParse(pulse['latitude'])
-                                        : pulse['latitude']?.toDouble();
-                                    final lng = pulse['longitude'] is String
-                                        ? double.tryParse(pulse['longitude'])
-                                        : pulse['longitude']?.toDouble();
+                                SizedBox(width: 4),
+                                Expanded(
+                                  child: FutureBuilder<String?>(
+                                    future: () async {
+                                      final lat = pulse['latitude'] is String
+                                          ? double.tryParse(pulse['latitude'])
+                                          : pulse['latitude']?.toDouble();
+                                      final lng = pulse['longitude'] is String
+                                          ? double.tryParse(pulse['longitude'])
+                                          : pulse['longitude']?.toDouble();
 
-                                    if (lat != null && lng != null) {
-                                      return await LocationFormatter
-                                          .getAddressFromCoordinates(
-                                        latitude: lat,
-                                        longitude: lng,
-                                      );
-                                    }
-                                    return null;
-                                  }(),
-                                  builder: (context, snapshot) {
-                                    if (snapshot.connectionState ==
-                                        ConnectionState.waiting) {
+                                      if (lat != null && lng != null) {
+                                        return await LocationFormatter
+                                            .getAddressFromCoordinates(
+                                          latitude: lat,
+                                          longitude: lng,
+                                        );
+                                      }
+                                      return null;
+                                    }(),
+                                    builder: (context, snapshot) {
+                                      if (snapshot.connectionState ==
+                                          ConnectionState.waiting) {
+                                        return Text(
+                                          'Loading location...',
+                                          style: FlutterFlowTheme.of(context)
+                                              .bodySmall
+                                              .override(
+                                                font: GoogleFonts.inter(),
+                                                color:
+                                                    FlutterFlowTheme.of(context)
+                                                        .secondaryText,
+                                              ),
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
+                                        );
+                                      }
+
+                                      String derivedLocationString() {
+                                        final loc = pulse['location'];
+                                        if (loc is Map<String, dynamic>) {
+                                          final name =
+                                              (loc['name'] as String?)?.trim();
+                                          final city =
+                                              (loc['city'] as String?)?.trim();
+                                          final country =
+                                              (loc['country'] as String?)
+                                                  ?.trim();
+                                          if (name != null && name.isNotEmpty) {
+                                            final parts = [name, city]
+                                                .whereType<String>()
+                                                .where((e) => e.isNotEmpty)
+                                                .take(2)
+                                                .join(', ');
+                                            if (parts.isNotEmpty) return parts;
+                                          }
+                                          final parts = [city, country]
+                                              .whereType<String>()
+                                              .where((e) => e.isNotEmpty)
+                                              .toList();
+                                          if (parts.isNotEmpty)
+                                            return parts.join(', ');
+                                        } else if (loc is String &&
+                                            loc.isNotEmpty) {
+                                          return loc;
+                                        }
+                                        return 'Location TBD';
+                                      }
+
+                                      final address = snapshot.data ??
+                                          derivedLocationString();
                                       return Text(
-                                        'Loading location...',
+                                        address,
                                         style: FlutterFlowTheme.of(context)
                                             .bodySmall
                                             .override(
@@ -1109,145 +1208,100 @@ class _SearchWidgetState extends State<SearchWidget>
                                         maxLines: 1,
                                         overflow: TextOverflow.ellipsis,
                                       );
-                                    }
-
-                                    String derivedLocationString() {
-                                      final loc = pulse['location'];
-                                      if (loc is Map<String, dynamic>) {
-                                        final name =
-                                            (loc['name'] as String?)?.trim();
-                                        final city =
-                                            (loc['city'] as String?)?.trim();
-                                        final country =
-                                            (loc['country'] as String?)?.trim();
-                                        if (name != null && name.isNotEmpty) {
-                                          final parts = [name, city]
-                                              .whereType<String>()
-                                              .where((e) => e.isNotEmpty)
-                                              .take(2)
-                                              .join(', ');
-                                          if (parts.isNotEmpty) return parts;
-                                        }
-                                        final parts = [city, country]
-                                            .whereType<String>()
-                                            .where((e) => e.isNotEmpty)
-                                            .toList();
-                                        if (parts.isNotEmpty)
-                                          return parts.join(', ');
-                                      } else if (loc is String &&
-                                          loc.isNotEmpty) {
-                                        return loc;
-                                      }
-                                      return 'Location TBD';
-                                    }
-
-                                    final address = snapshot.data ??
-                                        derivedLocationString();
-                                    return Text(
-                                      address,
-                                      style: FlutterFlowTheme.of(context)
-                                          .bodySmall
-                                          .override(
-                                            font: GoogleFonts.inter(),
-                                            color: FlutterFlowTheme.of(context)
-                                                .secondaryText,
-                                          ),
-                                      maxLines: 1,
-                                      overflow: TextOverflow.ellipsis,
-                                    );
-                                  },
+                                    },
+                                  ),
                                 ),
-                              ),
-                            ],
-                          ),
-                        ],
-                      ),
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                        children: [
-                          // Participant avatars
-                          Row(
-                            children: [
-                              _buildParticipantAvatars(pulse),
-                              SizedBox(width: 8),
-                              Text(
-                                '${pulse['participants']?.length ?? 0} going',
-                                style: FlutterFlowTheme.of(context)
-                                    .bodySmall
-                                    .override(
-                                      font: GoogleFonts.inter(),
-                                      color: FlutterFlowTheme.of(context)
-                                          .secondaryText,
-                                    ),
-                              ),
-                            ],
-                          ),
-                          // Join button
-                          if (_shouldShowJoinButton(pulse))
-                            Container(
-                              decoration: BoxDecoration(
-                                gradient: LinearGradient(
-                                  colors: [
-                                    FlutterFlowTheme.of(context).primary,
-                                    FlutterFlowTheme.of(context).secondary,
-                                  ],
+                              ],
+                            ),
+                          ],
+                        ),
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            // Participant avatars
+                            Row(
+                              children: [
+                                _buildParticipantAvatars(pulse),
+                                SizedBox(width: 8),
+                                Text(
+                                  '${pulse['participants']?.length ?? 0} going',
+                                  style: FlutterFlowTheme.of(context)
+                                      .bodySmall
+                                      .override(
+                                        font: GoogleFonts.inter(),
+                                        color: FlutterFlowTheme.of(context)
+                                            .secondaryText,
+                                      ),
                                 ),
-                                borderRadius: BorderRadius.circular(20),
-                              ),
-                              child: Material(
-                                color: Colors.transparent,
-                                child: InkWell(
-                                  onTap: () async {
-                                    await Haptics.vibrate(HapticsType.medium);
-                                    _showJoinPulseDialog(pulse);
-                                  },
+                              ],
+                            ),
+                            // Join button
+                            if (_shouldShowJoinButton(pulse))
+                              Container(
+                                decoration: BoxDecoration(
+                                  gradient: LinearGradient(
+                                    colors: [
+                                      FlutterFlowTheme.of(context).primary,
+                                      FlutterFlowTheme.of(context).secondary,
+                                    ],
+                                  ),
                                   borderRadius: BorderRadius.circular(20),
-                                  child: Container(
-                                    padding: EdgeInsets.symmetric(
-                                        horizontal: 16, vertical: 8),
-                                    child: Text(
-                                      'Join',
-                                      style: TextStyle(
-                                        color: Colors.white,
-                                        fontWeight: FontWeight.w600,
-                                        fontSize: 14,
+                                ),
+                                child: Material(
+                                  color: Colors.transparent,
+                                  child: InkWell(
+                                    onTap: () async {
+                                      await Haptics.vibrate(HapticsType.medium);
+                                      _showJoinPulseDialog(pulse);
+                                    },
+                                    borderRadius: BorderRadius.circular(20),
+                                    child: Container(
+                                      padding: EdgeInsets.symmetric(
+                                          horizontal: 16, vertical: 8),
+                                      child: Text(
+                                        'Join',
+                                        style: TextStyle(
+                                          color: Colors.white,
+                                          fontWeight: FontWeight.w600,
+                                          fontSize: 14,
+                                        ),
                                       ),
                                     ),
                                   ),
                                 ),
-                              ),
-                            )
-                          else if (_isCurrentUserParticipant(pulse) ||
-                              _isCurrentUserAuthor(pulse))
-                            Container(
-                              padding: EdgeInsets.symmetric(
-                                  horizontal: 16, vertical: 8),
-                              decoration: BoxDecoration(
-                                color: FlutterFlowTheme.of(context)
-                                    .success
-                                    .withOpacity(0.2),
-                                borderRadius: BorderRadius.circular(20),
-                                border: Border.all(
-                                  color: FlutterFlowTheme.of(context).success,
-                                  width: 1,
+                              )
+                            else if (_isCurrentUserParticipant(pulse) ||
+                                _isCurrentUserAuthor(pulse))
+                              Container(
+                                padding: EdgeInsets.symmetric(
+                                    horizontal: 16, vertical: 8),
+                                decoration: BoxDecoration(
+                                  color: FlutterFlowTheme.of(context)
+                                      .success
+                                      .withOpacity(0.2),
+                                  borderRadius: BorderRadius.circular(20),
+                                  border: Border.all(
+                                    color: FlutterFlowTheme.of(context).success,
+                                    width: 1,
+                                  ),
+                                ),
+                                child: Text(
+                                  'Joined',
+                                  style: TextStyle(
+                                    color: FlutterFlowTheme.of(context).success,
+                                    fontWeight: FontWeight.w600,
+                                    fontSize: 14,
+                                  ),
                                 ),
                               ),
-                              child: Text(
-                                'Joined',
-                                style: TextStyle(
-                                  color: FlutterFlowTheme.of(context).success,
-                                  fontWeight: FontWeight.w600,
-                                  fontSize: 14,
-                                ),
-                              ),
-                            ),
-                        ],
-                      ),
-                    ],
+                          ],
+                        ),
+                      ],
+                    ),
                   ),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
         ),
       ),
@@ -1322,171 +1376,186 @@ class _SearchWidgetState extends State<SearchWidget>
   }
 
   Widget _buildTrendingCard(Map<String, dynamic> pulse, int index) {
+    final pulseStatus = _getPulseStatus(pulse);
+    final isExpired = pulseStatus == 'ENDED';
+
     return Container(
       width: 160,
       margin: EdgeInsets.only(right: 12),
-      child: InkWell(
-        onTap: () async {
-          await Haptics.vibrate(HapticsType.selection);
-          _navigateToPulseDetail(pulse);
-        },
-        borderRadius: BorderRadius.circular(16),
-        child: Container(
-          decoration: BoxDecoration(
-            gradient: LinearGradient(
-              begin: Alignment.topLeft,
-              end: Alignment.bottomRight,
-              colors: [
-                FlutterFlowTheme.of(context).primary.withOpacity(0.8),
-                FlutterFlowTheme.of(context).secondary.withOpacity(0.8),
+      child: Opacity(
+        opacity: isExpired ? 0.5 : 1.0,
+        child: InkWell(
+          onTap: () async {
+            await Haptics.vibrate(HapticsType.selection);
+            _navigateToPulseDetail(pulse);
+          },
+          borderRadius: BorderRadius.circular(16),
+          child: Container(
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: isExpired
+                    ? [
+                        Colors.grey.withOpacity(0.8),
+                        Colors.grey.shade700.withOpacity(0.8),
+                      ]
+                    : [
+                        FlutterFlowTheme.of(context).primary.withOpacity(0.8),
+                        FlutterFlowTheme.of(context).secondary.withOpacity(0.8),
+                      ],
+              ),
+              borderRadius: BorderRadius.circular(16),
+              boxShadow: [
+                BoxShadow(
+                  blurRadius: 15,
+                  color: isExpired
+                      ? Colors.grey.withOpacity(0.3)
+                      : FlutterFlowTheme.of(context).primary.withOpacity(0.3),
+                  offset: Offset(0, 8),
+                ),
               ],
             ),
-            borderRadius: BorderRadius.circular(16),
-            boxShadow: [
-              BoxShadow(
-                blurRadius: 15,
-                color: FlutterFlowTheme.of(context).primary.withOpacity(0.3),
-                offset: Offset(0, 8),
-              ),
-            ],
-          ),
-          child: Stack(
-            children: [
-              // Trending badge
-              Positioned(
-                top: 8,
-                right: 8,
-                child: Container(
-                  padding: EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                  decoration: BoxDecoration(
-                    color: Colors.red,
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Icon(
-                        Icons.trending_up,
-                        size: 12,
-                        color: Colors.white,
-                      ),
-                      SizedBox(width: 2),
-                      Text(
-                        'HOT',
-                        style: TextStyle(
-                          color: Colors.white,
-                          fontSize: 10,
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-
-              // Content
-              Padding(
-                padding: EdgeInsets.all(16),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  mainAxisAlignment: MainAxisAlignment.end,
-                  children: [
-                    Text(
-                      pulse['title'] ?? 'Untitled Event',
-                      style: TextStyle(
-                        color: Colors.white,
-                        fontWeight: FontWeight.bold,
-                        fontSize: 16,
-                      ),
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
+            child: Stack(
+              children: [
+                // Trending/Expired badge
+                Positioned(
+                  top: 8,
+                  right: 8,
+                  child: Container(
+                    padding: EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: isExpired ? Colors.grey.shade700 : Colors.red,
+                      borderRadius: BorderRadius.circular(12),
                     ),
-                    SizedBox(height: 4),
-                    Row(
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
                       children: [
                         Icon(
-                          Icons.location_on_outlined,
-                          size: 14,
-                          color: Colors.white.withOpacity(0.8),
+                          isExpired
+                              ? Icons.event_busy_rounded
+                              : Icons.trending_up,
+                          size: 12,
+                          color: Colors.white,
                         ),
-                        SizedBox(width: 4),
-                        Expanded(
-                          child: Text(
-                            _deriveLocation(pulse['location'], pulse),
-                            style: TextStyle(
-                              color: Colors.white.withOpacity(0.8),
-                              fontSize: 12,
-                            ),
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
+                        SizedBox(width: 2),
+                        Text(
+                          isExpired ? 'ENDED' : 'HOT',
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontSize: 10,
+                            fontWeight: FontWeight.bold,
                           ),
                         ),
                       ],
                     ),
-                    SizedBox(height: 8),
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        Text(
-                          '${pulse['participants']?.length ?? 0} going',
-                          style: TextStyle(
-                            color: Colors.white.withOpacity(0.9),
-                            fontSize: 12,
-                            fontWeight: FontWeight.w600,
-                          ),
+                  ),
+                ),
+
+                // Content
+                Padding(
+                  padding: EdgeInsets.all(16),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisAlignment: MainAxisAlignment.end,
+                    children: [
+                      Text(
+                        pulse['title'] ?? 'Untitled Event',
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontWeight: FontWeight.bold,
+                          fontSize: 16,
                         ),
-                        if (_shouldShowJoinButton(pulse))
-                          InkWell(
-                            onTap: () async {
-                              await Haptics.vibrate(HapticsType.medium);
-                              _showJoinPulseDialog(pulse);
-                            },
-                            borderRadius: BorderRadius.circular(12),
-                            child: Container(
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      SizedBox(height: 4),
+                      Row(
+                        children: [
+                          Icon(
+                            Icons.location_on_outlined,
+                            size: 14,
+                            color: Colors.white.withOpacity(0.8),
+                          ),
+                          SizedBox(width: 4),
+                          Expanded(
+                            child: Text(
+                              _deriveLocation(pulse['location'], pulse),
+                              style: TextStyle(
+                                color: Colors.white.withOpacity(0.8),
+                                fontSize: 12,
+                              ),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                        ],
+                      ),
+                      SizedBox(height: 8),
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          Text(
+                            '${pulse['participants']?.length ?? 0} going',
+                            style: TextStyle(
+                              color: Colors.white.withOpacity(0.9),
+                              fontSize: 12,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                          if (_shouldShowJoinButton(pulse))
+                            InkWell(
+                              onTap: () async {
+                                await Haptics.vibrate(HapticsType.medium);
+                                _showJoinPulseDialog(pulse);
+                              },
+                              borderRadius: BorderRadius.circular(12),
+                              child: Container(
+                                padding: EdgeInsets.symmetric(
+                                    horizontal: 12, vertical: 4),
+                                decoration: BoxDecoration(
+                                  color: Colors.white.withOpacity(0.2),
+                                  borderRadius: BorderRadius.circular(12),
+                                ),
+                                child: Text(
+                                  'Join',
+                                  style: TextStyle(
+                                    color: Colors.white,
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                              ),
+                            )
+                          else if (_isCurrentUserParticipant(pulse) ||
+                              _isCurrentUserAuthor(pulse))
+                            Container(
                               padding: EdgeInsets.symmetric(
                                   horizontal: 12, vertical: 4),
                               decoration: BoxDecoration(
-                                color: Colors.white.withOpacity(0.2),
+                                color: Colors.green.withOpacity(0.2),
                                 borderRadius: BorderRadius.circular(12),
+                                border: Border.all(
+                                  color: Colors.green,
+                                  width: 1,
+                                ),
                               ),
                               child: Text(
-                                'Join',
+                                'Joined',
                                 style: TextStyle(
-                                  color: Colors.white,
+                                  color: Colors.green,
                                   fontSize: 12,
                                   fontWeight: FontWeight.w600,
                                 ),
                               ),
                             ),
-                          )
-                        else if (_isCurrentUserParticipant(pulse) ||
-                            _isCurrentUserAuthor(pulse))
-                          Container(
-                            padding: EdgeInsets.symmetric(
-                                horizontal: 12, vertical: 4),
-                            decoration: BoxDecoration(
-                              color: Colors.green.withOpacity(0.2),
-                              borderRadius: BorderRadius.circular(12),
-                              border: Border.all(
-                                color: Colors.green,
-                                width: 1,
-                              ),
-                            ),
-                            child: Text(
-                              'Joined',
-                              style: TextStyle(
-                                color: Colors.green,
-                                fontSize: 12,
-                                fontWeight: FontWeight.w600,
-                              ),
-                            ),
-                          ),
-                      ],
-                    ),
-                  ],
+                        ],
+                      ),
+                    ],
+                  ),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
         ),
       ),
@@ -1561,160 +1630,172 @@ class _SearchWidgetState extends State<SearchWidget>
   }
 
   Widget _buildNearbyCard(Map<String, dynamic> pulse, int index) {
+    final pulseStatus = _getPulseStatus(pulse);
+    final isExpired = pulseStatus == 'ENDED';
+
     return Container(
       width: 200,
       margin: EdgeInsets.only(right: 12),
-      child: InkWell(
-        onTap: () async {
-          await Haptics.vibrate(HapticsType.selection);
-          _navigateToPulseDetail(pulse);
-        },
-        borderRadius: BorderRadius.circular(16),
-        child: Container(
-          decoration: BoxDecoration(
-            color: FlutterFlowTheme.of(context).secondaryBackground,
-            borderRadius: BorderRadius.circular(16),
-            boxShadow: [
-              BoxShadow(
-                blurRadius: 10,
-                color: Colors.black.withOpacity(0.1),
-                offset: Offset(0, 4),
-              ),
-            ],
-          ),
-          child: Padding(
-            padding: EdgeInsets.all(12),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    Container(
-                      padding: EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                      decoration: BoxDecoration(
-                        color: Colors.green.withOpacity(0.1),
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Icon(
-                            Icons.location_on,
-                            size: 12,
-                            color: Colors.green,
-                          ),
-                          SizedBox(width: 2),
-                          Text(
-                            '0.5 mi',
-                            style: TextStyle(
-                              color: Colors.green,
-                              fontSize: 10,
-                              fontWeight: FontWeight.bold,
+      child: Opacity(
+        opacity: isExpired ? 0.5 : 1.0,
+        child: InkWell(
+          onTap: () async {
+            await Haptics.vibrate(HapticsType.selection);
+            _navigateToPulseDetail(pulse);
+          },
+          borderRadius: BorderRadius.circular(16),
+          child: Container(
+            decoration: BoxDecoration(
+              color: FlutterFlowTheme.of(context).secondaryBackground,
+              borderRadius: BorderRadius.circular(16),
+              boxShadow: [
+                BoxShadow(
+                  blurRadius: 10,
+                  color: Colors.black.withOpacity(0.1),
+                  offset: Offset(0, 4),
+                ),
+              ],
+            ),
+            child: Padding(
+              padding: EdgeInsets.all(12),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Container(
+                        padding:
+                            EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                        decoration: BoxDecoration(
+                          color: Colors.green.withOpacity(0.1),
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(
+                              isExpired
+                                  ? Icons.event_busy_rounded
+                                  : Icons.location_on,
+                              size: 12,
+                              color: isExpired
+                                  ? Colors.grey.shade700
+                                  : Colors.green,
                             ),
+                            SizedBox(width: 2),
+                            Text(
+                              isExpired ? 'ENDED' : '0.5 mi',
+                              style: TextStyle(
+                                color: isExpired
+                                    ? Colors.grey.shade700
+                                    : Colors.green,
+                                fontSize: 10,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      Icon(
+                        Icons.bookmark_border,
+                        size: 20,
+                        color: FlutterFlowTheme.of(context).secondaryText,
+                      ),
+                    ],
+                  ),
+                  SizedBox(height: 8),
+                  Text(
+                    pulse['title'] ?? 'Untitled Event',
+                    style: FlutterFlowTheme.of(context).titleSmall.override(
+                          font: GoogleFonts.interTight(
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  SizedBox(height: 4),
+                  Text(
+                    _deriveLocation(pulse['location'], pulse),
+                    style: FlutterFlowTheme.of(context).bodySmall.override(
+                          font: GoogleFonts.inter(),
+                          color: FlutterFlowTheme.of(context).secondaryText,
+                        ),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  Spacer(),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Row(
+                        children: [
+                          _buildParticipantAvatars(pulse),
+                          SizedBox(width: 4),
+                          Text(
+                            '${pulse['participants']?.length ?? 0}',
+                            style:
+                                FlutterFlowTheme.of(context).bodySmall.override(
+                                      font: GoogleFonts.inter(),
+                                      color: FlutterFlowTheme.of(context)
+                                          .secondaryText,
+                                    ),
                           ),
                         ],
                       ),
-                    ),
-                    Icon(
-                      Icons.bookmark_border,
-                      size: 20,
-                      color: FlutterFlowTheme.of(context).secondaryText,
-                    ),
-                  ],
-                ),
-                SizedBox(height: 8),
-                Text(
-                  pulse['title'] ?? 'Untitled Event',
-                  style: FlutterFlowTheme.of(context).titleSmall.override(
-                        font: GoogleFonts.interTight(
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
-                ),
-                SizedBox(height: 4),
-                Text(
-                  _deriveLocation(pulse['location'], pulse),
-                  style: FlutterFlowTheme.of(context).bodySmall.override(
-                        font: GoogleFonts.inter(),
-                        color: FlutterFlowTheme.of(context).secondaryText,
-                      ),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                ),
-                Spacer(),
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    Row(
-                      children: [
-                        _buildParticipantAvatars(pulse),
-                        SizedBox(width: 4),
-                        Text(
-                          '${pulse['participants']?.length ?? 0}',
-                          style: FlutterFlowTheme.of(context)
-                              .bodySmall
-                              .override(
-                                font: GoogleFonts.inter(),
-                                color:
-                                    FlutterFlowTheme.of(context).secondaryText,
+                      if (_shouldShowJoinButton(pulse))
+                        InkWell(
+                          onTap: () async {
+                            await Haptics.vibrate(HapticsType.medium);
+                            _showJoinPulseDialog(pulse);
+                          },
+                          borderRadius: BorderRadius.circular(12),
+                          child: Container(
+                            padding: EdgeInsets.symmetric(
+                                horizontal: 12, vertical: 6),
+                            decoration: BoxDecoration(
+                              color: FlutterFlowTheme.of(context).primary,
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                            child: Text(
+                              'Join',
+                              style: TextStyle(
+                                color: Colors.white,
+                                fontSize: 12,
+                                fontWeight: FontWeight.w600,
                               ),
-                        ),
-                      ],
-                    ),
-                    if (_shouldShowJoinButton(pulse))
-                      InkWell(
-                        onTap: () async {
-                          await Haptics.vibrate(HapticsType.medium);
-                          _showJoinPulseDialog(pulse);
-                        },
-                        borderRadius: BorderRadius.circular(12),
-                        child: Container(
+                            ),
+                          ),
+                        )
+                      else if (_isCurrentUserParticipant(pulse) ||
+                          _isCurrentUserAuthor(pulse))
+                        Container(
                           padding:
                               EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                           decoration: BoxDecoration(
-                            color: FlutterFlowTheme.of(context).primary,
+                            color: FlutterFlowTheme.of(context)
+                                .success
+                                .withOpacity(0.2),
                             borderRadius: BorderRadius.circular(12),
+                            border: Border.all(
+                              color: FlutterFlowTheme.of(context).success,
+                              width: 1,
+                            ),
                           ),
                           child: Text(
-                            'Join',
+                            'Joined',
                             style: TextStyle(
-                              color: Colors.white,
+                              color: FlutterFlowTheme.of(context).success,
                               fontSize: 12,
                               fontWeight: FontWeight.w600,
                             ),
                           ),
                         ),
-                      )
-                    else if (_isCurrentUserParticipant(pulse) ||
-                        _isCurrentUserAuthor(pulse))
-                      Container(
-                        padding:
-                            EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                        decoration: BoxDecoration(
-                          color: FlutterFlowTheme.of(context)
-                              .success
-                              .withOpacity(0.2),
-                          borderRadius: BorderRadius.circular(12),
-                          border: Border.all(
-                            color: FlutterFlowTheme.of(context).success,
-                            width: 1,
-                          ),
-                        ),
-                        child: Text(
-                          'Joined',
-                          style: TextStyle(
-                            color: FlutterFlowTheme.of(context).success,
-                            fontSize: 12,
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
-                      ),
-                  ],
-                ),
-              ],
+                    ],
+                  ),
+                ],
+              ),
             ),
           ),
         ),
@@ -1891,244 +1972,245 @@ class _SearchWidgetState extends State<SearchWidget>
   }
 
   Widget _buildGridPulseCard(Map<String, dynamic> pulse, int index) {
-    return InkWell(
-      onTap: () async {
-        await Haptics.vibrate(HapticsType.selection);
-        _navigateToPulseDetail(pulse);
-      },
-      borderRadius: BorderRadius.circular(16),
-      child: Container(
-        decoration: BoxDecoration(
-          color: FlutterFlowTheme.of(context).secondaryBackground,
-          borderRadius: BorderRadius.circular(16),
-          boxShadow: [
-            BoxShadow(
-              blurRadius: 10,
-              color: Colors.black.withOpacity(0.1),
-              offset: Offset(0, 4),
-            ),
-          ],
-        ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            // Image
-            Expanded(
-              flex: 3,
-              child: Container(
-                width: double.infinity,
-                child: ClipRRect(
-                  borderRadius: BorderRadius.only(
-                    topLeft: Radius.circular(16),
-                    topRight: Radius.circular(16),
-                  ),
-                  child: Container(
-                    color:
-                        FlutterFlowTheme.of(context).primary.withOpacity(0.3),
-                    child: pulse['imageUrl'] != null
-                        ? Image.network(
-                            pulse['imageUrl'],
-                            fit: BoxFit.cover,
-                            errorBuilder: (context, error, stackTrace) {
-                              return Center(
-                                child: Icon(
-                                  Icons.event_rounded,
-                                  size: 40,
+    final pulseStatus = _getPulseStatus(pulse);
+    final isExpired = pulseStatus == 'ENDED';
+
+    return Opacity(
+      opacity: isExpired ? 0.5 : 1.0,
+      child: InkWell(
+        onTap: () async {
+          await Haptics.vibrate(HapticsType.selection);
+          _navigateToPulseDetail(pulse);
+        },
+        borderRadius: BorderRadius.circular(16),
+        child: Container(
+          decoration: BoxDecoration(
+            color: FlutterFlowTheme.of(context).secondaryBackground,
+            borderRadius: BorderRadius.circular(16),
+            boxShadow: [
+              BoxShadow(
+                blurRadius: 10,
+                color: Colors.black.withOpacity(0.1),
+                offset: Offset(0, 4),
+              ),
+            ],
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              // Image
+              Expanded(
+                flex: 3,
+                child: Container(
+                  width: double.infinity,
+                  child: Stack(
+                    children: [
+                      ClipRRect(
+                        borderRadius: BorderRadius.only(
+                          topLeft: Radius.circular(16),
+                          topRight: Radius.circular(16),
+                        ),
+                        child: Container(
+                          width: double.infinity,
+                          height: double.infinity,
+                          color: isExpired
+                              ? Colors.grey.withOpacity(0.3)
+                              : FlutterFlowTheme.of(context)
+                                  .primary
+                                  .withOpacity(0.3),
+                          child: ColorFiltered(
+                            colorFilter: isExpired
+                                ? ColorFilter.mode(
+                                    Colors.grey,
+                                    BlendMode.saturation,
+                                  )
+                                : ColorFilter.mode(
+                                    Colors.transparent,
+                                    BlendMode.multiply,
+                                  ),
+                            child: pulse['imageUrl'] != null
+                                ? Image.network(
+                                    pulse['imageUrl'],
+                                    fit: BoxFit.cover,
+                                    errorBuilder: (context, error, stackTrace) {
+                                      return Center(
+                                        child: Icon(
+                                          Icons.event_rounded,
+                                          size: 40,
+                                          color: Colors.white,
+                                        ),
+                                      );
+                                    },
+                                  )
+                                : Center(
+                                    child: Icon(
+                                      Icons.event_rounded,
+                                      size: 40,
+                                      color: Colors.white,
+                                    ),
+                                  ),
+                          ),
+                        ),
+                      ),
+                      // Expired badge
+                      if (isExpired)
+                        Positioned(
+                          top: 8,
+                          right: 8,
+                          child: Container(
+                            padding: EdgeInsets.symmetric(
+                                horizontal: 8, vertical: 4),
+                            decoration: BoxDecoration(
+                              color: Colors.grey.shade700,
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(
+                                  Icons.event_busy_rounded,
+                                  size: 12,
                                   color: Colors.white,
                                 ),
-                              );
-                            },
-                          )
-                        : Center(
-                            child: Icon(
-                              Icons.event_rounded,
-                              size: 40,
-                              color: Colors.white,
+                                SizedBox(width: 4),
+                                Text(
+                                  'ENDED',
+                                  style: TextStyle(
+                                    color: Colors.white,
+                                    fontSize: 10,
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                ),
+                              ],
                             ),
                           ),
+                        ),
+                    ],
                   ),
                 ),
               ),
-            ),
-            // Content
-            Expanded(
-              flex: 2,
-              child: Padding(
-                padding: EdgeInsets.all(12),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          pulse['title'] ?? 'Untitled Event',
-                          style:
-                              FlutterFlowTheme.of(context).titleSmall.override(
-                                    font: GoogleFonts.interTight(
-                                      fontWeight: FontWeight.bold,
-                                    ),
+              // Content
+              Expanded(
+                flex: 2,
+                child: Padding(
+                  padding: EdgeInsets.all(12),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            pulse['title'] ?? 'Untitled Event',
+                            style: FlutterFlowTheme.of(context)
+                                .titleSmall
+                                .override(
+                                  font: GoogleFonts.interTight(
+                                    fontWeight: FontWeight.bold,
                                   ),
-                          maxLines: 2,
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                        SizedBox(height: 4),
-                        Row(
-                          children: [
-                            Icon(
-                              Icons.location_on_outlined,
-                              size: 12,
-                              color: FlutterFlowTheme.of(context).secondaryText,
-                            ),
-                            SizedBox(width: 2),
-                            Expanded(
-                              child: Text(
-                                _deriveLocation(pulse['location'], pulse),
-                                style: FlutterFlowTheme.of(context)
-                                    .bodySmall
-                                    .override(
+                                ),
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                          SizedBox(height: 4),
+                          Row(
+                            children: [
+                              Icon(
+                                Icons.location_on_outlined,
+                                size: 12,
+                                color:
+                                    FlutterFlowTheme.of(context).secondaryText,
+                              ),
+                              SizedBox(width: 2),
+                              Expanded(
+                                child: Text(
+                                  _deriveLocation(pulse['location'], pulse),
+                                  style: FlutterFlowTheme.of(context)
+                                      .bodySmall
+                                      .override(
+                                        font: GoogleFonts.inter(),
+                                        color: FlutterFlowTheme.of(context)
+                                            .secondaryText,
+                                      ),
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ],
+                      ),
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          Text(
+                            '${pulse['participants']?.length ?? 0} going',
+                            style:
+                                FlutterFlowTheme.of(context).bodySmall.override(
                                       font: GoogleFonts.inter(),
                                       color: FlutterFlowTheme.of(context)
                                           .secondaryText,
                                     ),
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
+                          ),
+                          if (_shouldShowJoinButton(pulse))
+                            InkWell(
+                              onTap: () async {
+                                await Haptics.vibrate(HapticsType.medium);
+                                _showJoinPulseDialog(pulse);
+                              },
+                              borderRadius: BorderRadius.circular(8),
+                              child: Container(
+                                padding: EdgeInsets.symmetric(
+                                    horizontal: 8, vertical: 4),
+                                decoration: BoxDecoration(
+                                  color: FlutterFlowTheme.of(context).primary,
+                                  borderRadius: BorderRadius.circular(8),
+                                ),
+                                child: Text(
+                                  'Join',
+                                  style: TextStyle(
+                                    color: Colors.white,
+                                    fontSize: 10,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
                               ),
-                            ),
-                          ],
-                        ),
-                      ],
-                    ),
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        Text(
-                          '${pulse['participants']?.length ?? 0} going',
-                          style: FlutterFlowTheme.of(context)
-                              .bodySmall
-                              .override(
-                                font: GoogleFonts.inter(),
-                                color:
-                                    FlutterFlowTheme.of(context).secondaryText,
-                              ),
-                        ),
-                        if (_shouldShowJoinButton(pulse))
-                          InkWell(
-                            onTap: () async {
-                              await Haptics.vibrate(HapticsType.medium);
-                              _showJoinPulseDialog(pulse);
-                            },
-                            borderRadius: BorderRadius.circular(8),
-                            child: Container(
+                            )
+                          else if (_isCurrentUserParticipant(pulse) ||
+                              _isCurrentUserAuthor(pulse))
+                            Container(
                               padding: EdgeInsets.symmetric(
                                   horizontal: 8, vertical: 4),
                               decoration: BoxDecoration(
-                                color: FlutterFlowTheme.of(context).primary,
+                                color: FlutterFlowTheme.of(context)
+                                    .success
+                                    .withOpacity(0.2),
                                 borderRadius: BorderRadius.circular(8),
+                                border: Border.all(
+                                  color: FlutterFlowTheme.of(context).success,
+                                  width: 1,
+                                ),
                               ),
                               child: Text(
-                                'Join',
+                                'Joined',
                                 style: TextStyle(
-                                  color: Colors.white,
+                                  color: FlutterFlowTheme.of(context).success,
                                   fontSize: 10,
                                   fontWeight: FontWeight.w600,
                                 ),
                               ),
                             ),
-                          )
-                        else if (_isCurrentUserParticipant(pulse) ||
-                            _isCurrentUserAuthor(pulse))
-                          Container(
-                            padding: EdgeInsets.symmetric(
-                                horizontal: 8, vertical: 4),
-                            decoration: BoxDecoration(
-                              color: FlutterFlowTheme.of(context)
-                                  .success
-                                  .withOpacity(0.2),
-                              borderRadius: BorderRadius.circular(8),
-                              border: Border.all(
-                                color: FlutterFlowTheme.of(context).success,
-                                width: 1,
-                              ),
-                            ),
-                            child: Text(
-                              'Joined',
-                              style: TextStyle(
-                                color: FlutterFlowTheme.of(context).success,
-                                fontSize: 10,
-                                fontWeight: FontWeight.w600,
-                              ),
-                            ),
-                          ),
-                      ],
-                    ),
-                  ],
+                        ],
+                      ),
+                    ],
+                  ),
                 ),
               ),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
     );
-  }
-
-  Widget _buildFloatingActionButtons() {
-    return Positioned(
-      right: 16,
-      bottom: 100,
-      child: AnimatedBuilder(
-        animation: _fabAnimation,
-        builder: (context, child) {
-          return Transform.scale(
-            scale: _fabAnimation.value,
-            child: Container(
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                gradient: LinearGradient(
-                  begin: Alignment.topLeft,
-                  end: Alignment.bottomRight,
-                  colors: [
-                    FlutterFlowTheme.of(context).primary,
-                    FlutterFlowTheme.of(context).secondary,
-                  ],
-                ),
-                boxShadow: [
-                  BoxShadow(
-                    blurRadius: 20,
-                    color:
-                        FlutterFlowTheme.of(context).primary.withOpacity(0.4),
-                    offset: Offset(0, 10),
-                  ),
-                ],
-              ),
-              child: Material(
-                color: Colors.transparent,
-                child: InkWell(
-                  onTap: () async {
-                    await Haptics.vibrate(HapticsType.medium);
-                    context.pushNamed('CreatePulse');
-                  },
-                  customBorder: CircleBorder(),
-                  child: Container(
-                    width: 56,
-                    height: 56,
-                    alignment: Alignment.center,
-                    child: Icon(
-                      Icons.add_rounded,
-                      color: Colors.white,
-                      size: 28,
-                    ),
-                  ),
-                ),
-              ),
-            ),
-          );
-        },
-      ),
-    )
-        .animate()
-        .slideY(begin: 2, end: 0, duration: 600.ms, delay: 800.ms)
-        .fadeIn();
   }
 }

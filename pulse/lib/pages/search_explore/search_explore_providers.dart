@@ -39,6 +39,8 @@ class ExplorePulse {
   final double? latitude;
   final double? longitude;
   final double? distanceKm;
+  final DateTime? activeFrom;
+  final DateTime? activeUntil;
 
   const ExplorePulse({
     required this.id,
@@ -51,6 +53,8 @@ class ExplorePulse {
     this.latitude,
     this.longitude,
     this.distanceKm,
+    this.activeFrom,
+    this.activeUntil,
   });
 
   factory ExplorePulse.fromMap(Map<String, dynamic> map) {
@@ -91,6 +95,19 @@ class ExplorePulse {
       humanLocation =
           '${latVal.toStringAsFixed(4)}, ${lngVal.toStringAsFixed(4)}';
     }
+
+    // Parse active window dates
+    DateTime? activeFromVal;
+    DateTime? activeUntilVal;
+    final rawActiveFrom = map['activeFrom'];
+    final rawActiveUntil = map['activeUntil'];
+    if (rawActiveFrom is String) {
+      activeFromVal = DateTime.tryParse(rawActiveFrom);
+    }
+    if (rawActiveUntil is String) {
+      activeUntilVal = DateTime.tryParse(rawActiveUntil);
+    }
+
     return ExplorePulse(
       id: (map['id'] ?? '').toString(),
       title: (map['title'] ?? 'Untitled').toString(),
@@ -106,6 +123,8 @@ class ExplorePulse {
       latitude: latVal,
       longitude: lngVal,
       distanceKm: parseDouble(map['distanceKm']),
+      activeFrom: activeFromVal,
+      activeUntil: activeUntilVal,
     );
   }
 }
