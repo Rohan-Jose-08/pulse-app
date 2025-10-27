@@ -338,7 +338,15 @@ class _PulseInvitationsPageState extends State<PulseInvitationsPage> {
 
     // Inviter info
     final inviter = invitation['inviter'];
-    final inviterName = inviter?['displayName']?.toString() ?? 'Someone';
+    // Prefer non-empty displayName from inviter; fall back to pulse author name for pulse invites
+    String inviterName = (inviter?['displayName']?.toString() ?? '').trim();
+    if (inviterName.isEmpty) {
+      if (invitationType == 'PULSE_CHAT' && pulse != null) {
+        inviterName =
+            (pulse['author']?['displayName']?.toString() ?? '').trim();
+      }
+    }
+    if (inviterName.isEmpty) inviterName = 'Unknown';
     final inviterImage = inviter?['profileImageUrl']?.toString();
     final inviterBio = inviter?['bio']?.toString();
     final followersCount = inviter?['followersCount'] as int? ?? 0;

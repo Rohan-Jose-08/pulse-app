@@ -4,7 +4,7 @@ import 'package:flutter_animate/flutter_animate.dart';
 class AnimatedHeader extends StatefulWidget {
   final String title;
   final String subtitle;
-  final VoidCallback? onRefresh;
+  final Future<void> Function()? onRefresh;
 
   const AnimatedHeader({
     Key? key,
@@ -22,13 +22,13 @@ class _AnimatedHeaderState extends State<AnimatedHeader> {
 
   Future<void> _handleRefresh() async {
     if (_isRefreshing) return;
-    
+
     setState(() => _isRefreshing = true);
-    
+
     if (widget.onRefresh != null) {
       await widget.onRefresh!();
     }
-    
+
     if (mounted) {
       setState(() => _isRefreshing = false);
     }
@@ -37,7 +37,7 @@ class _AnimatedHeaderState extends State<AnimatedHeader> {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    
+
     return Container(
       padding: const EdgeInsets.fromLTRB(24, 48, 24, 24),
       decoration: BoxDecoration(
@@ -66,24 +66,23 @@ class _AnimatedHeaderState extends State<AnimatedHeader> {
                         fontWeight: FontWeight.bold,
                         color: theme.colorScheme.onSurface,
                       ),
-                    ).animate()
+                    )
+                        .animate()
                         .fadeIn(duration: 600.ms)
                         .slideY(begin: -0.3, end: 0, duration: 600.ms),
-                    
                     const SizedBox(height: 4),
-                    
                     Text(
                       widget.subtitle,
                       style: theme.textTheme.bodyLarge?.copyWith(
                         color: theme.colorScheme.onSurface.withOpacity(0.7),
                       ),
-                    ).animate()
+                    )
+                        .animate()
                         .fadeIn(duration: 800.ms)
                         .slideY(begin: -0.3, end: 0, duration: 800.ms),
                   ],
                 ),
               ),
-              
               if (widget.onRefresh != null)
                 Container(
                   decoration: BoxDecoration(
@@ -108,8 +107,7 @@ class _AnimatedHeaderState extends State<AnimatedHeader> {
                     onPressed: _handleRefresh,
                     tooltip: 'Refresh',
                   ),
-                ).animate()
-                    .scale(duration: 400.ms, curve: Curves.easeOutBack),
+                ).animate().scale(duration: 400.ms, curve: Curves.easeOutBack),
             ],
           ),
         ],

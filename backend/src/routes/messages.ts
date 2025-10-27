@@ -303,7 +303,11 @@ router.post('/conversations/:id/invitations', authenticateUser, async (req, res)
 	}
 });
 
-// List my pending invitations
+// NOTE: Legacy invitation endpoints moved to /api/invitations (unified)
+// The routes below are DEPRECATED and should not be used
+// Use /api/invitations instead for all invitation operations
+
+// List my pending invitations (DEPRECATED - use /api/invitations instead)
 router.get('/invitations', authenticateUser, async (req, res) => {
 	try {
 		const me = req.user.id as string;
@@ -319,7 +323,10 @@ router.get('/invitations', authenticateUser, async (req, res) => {
 	}
 });
 
-// Accept or decline an invitation
+// DEPRECATED: This endpoint conflicts with the unified /api/invitations/:invitationId/respond
+// Kept for backward compatibility but redirects to the new unified endpoint
+// TODO: Remove this after all clients are updated
+/*
 router.post('/invitations/:invitationId/respond', authenticateUser, async (req, res) => {
 	try {
 		const me = req.user.id as string;
@@ -425,6 +432,7 @@ router.post('/invitations/:invitationId/respond', authenticateUser, async (req, 
 		res.status(500).json({ error: 'Internal server error' });
 	}
 });
+*/
 
 export default router;
 
@@ -1407,12 +1415,11 @@ router.get('/conversations-pulse', authenticateUser, async (req, res) => {
 						createdAt: msg.createdAt,
 						videoUrl: msg.videoUrl,
 					});
-						// Safety net: also push directly to participant sockets
+						// Emit conversation updates only (message already sent to room above)
 						(convo.participants as any[]).forEach((p: any) => {
 						const sockets = userSockets.get(p.id);
 						if (!sockets) return;
 							sockets.forEach((sid: string) => {
-								io?.to(sid).emit('message:new', { id: msg.id, conversationId: msg.conversationId, senderId: msg.senderId, text: msg.text, imageUrl: msg.imageUrl, createdAt: msg.createdAt, videoUrl: msg.videoUrl });
 								io?.to(sid).emit('conversation:updated', { conversationId: convo.id });
 							});
 					});
@@ -1471,7 +1478,6 @@ router.get('/conversations-pulse', authenticateUser, async (req, res) => {
 						const sockets = userSockets.get(p.id);
 						if (!sockets) return;
 							sockets.forEach((sid: string) => {
-								io?.to(sid).emit('message:new', { id: msg.id, conversationId: legacy.id, senderId: me, text: msg.text, imageUrl: msg.imageUrl, createdAt: msg.createdAt, videoUrl: msg.videoUrl });
 								io?.to(sid).emit('conversation:updated', { conversationId: legacy.id });
 							});
 					});
@@ -1516,7 +1522,6 @@ router.get('/conversations-pulse', authenticateUser, async (req, res) => {
 						const sockets = userSockets.get(p.id);
 						if (!sockets) return;
 							sockets.forEach((sid: string) => {
-								io?.to(sid).emit('message:new', { id: msg.id, conversationId: legacy.id, senderId: me, text: msg.text, imageUrl: msg.imageUrl, createdAt: msg.createdAt, videoUrl: msg.videoUrl });
 								io?.to(sid).emit('conversation:updated', { conversationId: legacy.id });
 							});
 					});
@@ -1707,20 +1712,11 @@ router.get('/conversations-pulse', authenticateUser, async (req, res) => {
 					videoUrl: msg.videoUrl
 				});
 
-				// Notify all participants
+				// Notify participants of conversation update (removed duplicate message:new)
 				(convo.participants as any[]).forEach((p: any) => {
 					const sockets = userSockets.get(p.id);
 					if (!sockets) return;
 					sockets.forEach((sid: string) => {
-						io?.to(sid).emit('message:new', {
-							id: msg.id,
-							conversationId: legacy.id,
-							senderId: me,
-							text: msg.text,
-							imageUrl: msg.imageUrl,
-							createdAt: msg.createdAt,
-							videoUrl: msg.videoUrl
-						});
 						io?.to(sid).emit('conversation:updated', {
 							conversationId: legacy.id
 						});

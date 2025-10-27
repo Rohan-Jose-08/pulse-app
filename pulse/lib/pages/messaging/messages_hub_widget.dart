@@ -12,6 +12,8 @@ import 'group_chat_page.dart';
 import 'create_group_chat_page.dart';
 import '/flutter_flow/flutter_flow_util.dart';
 import 'dart:async';
+import 'package:permission_handler/permission_handler.dart';
+import '../calling/group_call_screen.dart';
 
 class MessagesHubWidget extends StatefulWidget {
   const MessagesHubWidget({super.key});
@@ -246,16 +248,26 @@ class _MessagesHubWidgetState extends State<MessagesHubWidget> {
   // Activity status tracking
   final Map<String, String> _userStatuses = {}; // userId -> status
   StreamSubscription? _statusSubscription;
+  StreamSubscription? _gcStartedSub;
+  StreamSubscription? _gcStoppedSub;
+  StreamSubscription? _gcParticipantsSub;
+  final Set<String> _activeCalls = <String>{};
+  final Map<String, bool> _activeCallIsVideo = <String, bool>{};
+  final Map<String, int> _activeCallParticipantCounts = <String, int>{};
 
   @override
   void initState() {
     super.initState();
     _listenToStatusChanges();
+    _listenToGroupCalls();
   }
 
   @override
   void dispose() {
     _statusSubscription?.cancel();
+    _gcStartedSub?.cancel();
+    _gcStoppedSub?.cancel();
+    _gcParticipantsSub?.cancel();
     super.dispose();
   }
 
@@ -265,12 +277,89 @@ class _MessagesHubWidgetState extends State<MessagesHubWidget> {
         SocketService.instance.userStatusChanged.listen((data) {
       final userId = data['userId'] as String?;
       final status = data['status'] as String?;
-
       if (userId != null && status != null) {
         setState(() {
           _userStatuses[userId] = status;
         });
       }
+    });
+  }
+
+  /// Global listener for group call start events to surface a join banner
+  void _listenToGroupCalls() {
+    _gcStartedSub = SocketService.instance.groupCallStarted.listen((m) async {
+      try {
+        final cid = m['conversationId']?.toString();
+        if (cid == null || cid.isEmpty) return;
+        final isVideo = m['isVideo'] == true;
+        if (mounted) {
+          setState(() {
+            _activeCalls.add(cid);
+            _activeCallIsVideo[cid] = isVideo;
+          });
+        }
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            behavior: SnackBarBehavior.floating,
+            content: Text(isVideo
+                ? 'Group video call started'
+                : 'Group voice call started'),
+            action: SnackBarAction(
+              label: 'Join',
+              onPressed: () async {
+                if (isVideo) {
+                  final res = await [Permission.microphone, Permission.camera]
+                      .request();
+                  if (res[Permission.microphone]?.isGranted != true ||
+                      res[Permission.camera]?.isGranted != true) return;
+                } else {
+                  final p = await Permission.microphone.request();
+                  if (!p.isGranted) return;
+                }
+                if (!mounted) return;
+                Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (_) => GroupCallScreen(
+                      conversationId: cid,
+                      isVideo: isVideo,
+                    ),
+                  ),
+                );
+              },
+            ),
+          ),
+        );
+      } catch (_) {}
+    });
+
+    _gcStoppedSub = SocketService.instance.groupCallStopped.listen((m) async {
+      try {
+        final cid = m['conversationId']?.toString();
+        if (cid == null || cid.isEmpty) return;
+        if (mounted) {
+          setState(() {
+            _activeCalls.remove(cid);
+            _activeCallIsVideo.remove(cid);
+            _activeCallParticipantCounts.remove(cid);
+          });
+        }
+      } catch (_) {}
+    });
+
+    _gcParticipantsSub =
+        SocketService.instance.groupCallParticipants.listen((m) async {
+      try {
+        final cid = m['conversationId']?.toString();
+        if (cid == null || cid.isEmpty) return;
+        final list = (m['participants'] as List?) ?? const [];
+        if (mounted) {
+          setState(() {
+            _activeCallParticipantCounts[cid] = list.length;
+            if (list.isNotEmpty) _activeCalls.add(cid);
+          });
+        }
+      } catch (_) {}
     });
   }
 
@@ -349,6 +438,28 @@ class _MessagesHubWidgetState extends State<MessagesHubWidget> {
                 size: 24,
               ),
             ),
+            // Ongoing call indicator (non-intrusive)
+            if (_activeCalls.contains(data['id']?.toString()))
+              Positioned(
+                top: -2,
+                left: -2,
+                child: Container(
+                  padding: const EdgeInsets.all(2),
+                  decoration: BoxDecoration(
+                    color: Colors.green,
+                    shape: BoxShape.circle,
+                    border:
+                        Border.all(color: theme.secondaryBackground, width: 2),
+                  ),
+                  child: Icon(
+                    _activeCallIsVideo[data['id']?.toString()] == true
+                        ? Icons.videocam_rounded
+                        : Icons.call_rounded,
+                    size: 12,
+                    color: Colors.white,
+                  ),
+                ),
+              ),
             if (participantCount > 0)
               Positioned(
                 right: -2,
@@ -463,6 +574,28 @@ class _MessagesHubWidgetState extends State<MessagesHubWidget> {
                     )
                   : null,
             ),
+            // Ongoing call indicator (non-intrusive)
+            if (_activeCalls.contains(data['id']?.toString()))
+              Positioned(
+                top: -2,
+                left: -2,
+                child: Container(
+                  padding: const EdgeInsets.all(2),
+                  decoration: BoxDecoration(
+                    color: Colors.green,
+                    shape: BoxShape.circle,
+                    border:
+                        Border.all(color: theme.secondaryBackground, width: 2),
+                  ),
+                  child: Icon(
+                    _activeCallIsVideo[data['id']?.toString()] == true
+                        ? Icons.videocam_rounded
+                        : Icons.call_rounded,
+                    size: 12,
+                    color: Colors.white,
+                  ),
+                ),
+              ),
             if (participantCount > 0)
               Positioned(
                 right: -2,
@@ -846,6 +979,29 @@ class _MessagesHubWidgetState extends State<MessagesHubWidget> {
                                 ),
                               );
                             }
+
+                            // Join socket rooms for all visible conversations so we receive
+                            // room-scoped events (e.g., groupcall:started) while on the hub.
+                            try {
+                              final idsToJoin = <String>{
+                                ...groupChats
+                                    .map((c) => c['id']?.toString())
+                                    .whereType<String>()
+                                    .where((s) => s.isNotEmpty),
+                                ...pulseChats
+                                    .map((c) => c['id']?.toString())
+                                    .whereType<String>()
+                                    .where((s) => s.isNotEmpty),
+                                ...displayDirectChats
+                                    .map((c) => c['id']?.toString())
+                                    .whereType<String>()
+                                    .where((s) => s.isNotEmpty),
+                              };
+                              // Fire-and-forget; SocketService will dedupe room joins.
+                              for (final id in idsToJoin) {
+                                SocketService.instance.joinConversation(id);
+                              }
+                            } catch (_) {}
 
                             return ListView(
                               children: [

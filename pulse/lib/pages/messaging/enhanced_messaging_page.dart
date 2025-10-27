@@ -302,6 +302,8 @@ class EnhancedMessagingPage extends ConsumerStatefulWidget {
 
 class _EnhancedMessagingPageState extends ConsumerState<EnhancedMessagingPage>
     with TickerProviderStateMixin {
+  // Current conversation id (may be normalized by server acks or bootstrap)
+  late String _chatId;
   final _text = TextEditingController();
   final _focus = FocusNode();
   final _scroll = ScrollController();
@@ -381,6 +383,7 @@ class _EnhancedMessagingPageState extends ConsumerState<EnhancedMessagingPage>
   @override
   void initState() {
     super.initState();
+    _chatId = widget.chatId;
     _indexGroupMembers();
     _text.addListener(_handleTyping);
     _scroll.addListener(_handleScroll);
@@ -388,7 +391,23 @@ class _EnhancedMessagingPageState extends ConsumerState<EnhancedMessagingPage>
     _badgeAnim = CurvedAnimation(parent: _badgeCtl, curve: Curves.easeOut);
     // Ensure active transport connected & joined
     ChatTransportManager.instance.ensureConnected();
-    ChatTransportManager.instance.active.joinConversation(widget.chatId);
+    ChatTransportManager.instance.active.joinConversation(_chatId);
+
+    // Normalize id from initial message load (handles pulse/direct/group id mapping)
+    _normalizeConversationIdFromBootstrap();
+
+    // Also normalize on message ack (server confirms canonical id)
+    SocketService.instance.acks.listen((ack) {
+      try {
+        final cid = (ack['conversationId'] ?? ack['id'])?.toString();
+        if (cid != null && cid.isNotEmpty && cid != _chatId) {
+          final old = _chatId;
+          setState(() => _chatId = cid);
+          ChatTransportManager.instance.active.leaveConversation(old);
+          ChatTransportManager.instance.active.joinConversation(_chatId);
+        }
+      } catch (_) {}
+    });
 
     // Load recipient's activity status
     if (!widget.isGroupChat) {
@@ -399,7 +418,7 @@ class _EnhancedMessagingPageState extends ConsumerState<EnhancedMessagingPage>
     // Listen for message status updates (delivered/read receipts)
     SocketService.instance.messageStatusUpdates.listen((data) {
       if (!mounted) return;
-      if (data['conversationId']?.toString() != widget.chatId) return;
+      if (data['conversationId']?.toString() != _chatId) return;
 
       final messageId = data['messageId']?.toString();
       if (messageId == null) return;
@@ -457,8 +476,25 @@ class _EnhancedMessagingPageState extends ConsumerState<EnhancedMessagingPage>
     _scroll.dispose();
     _badgeCtl.dispose();
     _setTyping(false);
-    ChatTransportManager.instance.active.leaveConversation(widget.chatId);
+    ChatTransportManager.instance.active.leaveConversation(_chatId);
     super.dispose();
+  }
+
+  Future<void> _normalizeConversationIdFromBootstrap() async {
+    try {
+      final res = await ApiService.instance.listMessages(_chatId);
+      final msgs = (res?['messages'] as List?)?.whereType<Map>().toList() ??
+          const <Map>[];
+      if (msgs.isNotEmpty) {
+        final canonical = msgs.first['conversationId']?.toString();
+        if (canonical != null && canonical.isNotEmpty && canonical != _chatId) {
+          final old = _chatId;
+          setState(() => _chatId = canonical);
+          ChatTransportManager.instance.active.leaveConversation(old);
+          ChatTransportManager.instance.active.joinConversation(_chatId);
+        }
+      }
+    } catch (_) {}
   }
 
   /// Load recipient's activity status
@@ -510,8 +546,7 @@ class _EnhancedMessagingPageState extends ConsumerState<EnhancedMessagingPage>
   }
 
   void _markVisibleMessagesAsRead() {
-    final messagesAsync =
-        ref.read(_enhancedMessagesStreamProvider(widget.chatId));
+    final messagesAsync = ref.read(_enhancedMessagesStreamProvider(_chatId));
     messagesAsync.whenData((messages) {
       for (final message in messages) {
         // Skip if it's my own message or already marked
@@ -521,7 +556,7 @@ class _EnhancedMessagingPageState extends ConsumerState<EnhancedMessagingPage>
         // Mark as read
         _markedAsRead.add(message.id);
         SocketService.instance.markMessageRead(
-          conversationId: widget.chatId,
+          conversationId: _chatId,
           messageId: message.id,
         );
       }
@@ -538,7 +573,7 @@ class _EnhancedMessagingPageState extends ConsumerState<EnhancedMessagingPage>
 
   Future<void> _setTyping(bool v) async {
     if (currentUserUid.isEmpty) return;
-    ChatTransportManager.instance.active.setTyping(widget.chatId, v);
+    ChatTransportManager.instance.active.setTyping(_chatId, v);
   }
 
   Future<void> _sendText() async {
@@ -548,7 +583,7 @@ class _EnhancedMessagingPageState extends ConsumerState<EnhancedMessagingPage>
     try {
       HapticFeedback.lightImpact();
       ChatTransportManager.instance.active.sendMessage(
-        conversationId: widget.chatId,
+        conversationId: _chatId,
         text: txt,
         repliedToId: _reply?.id,
       );
@@ -569,8 +604,8 @@ class _EnhancedMessagingPageState extends ConsumerState<EnhancedMessagingPage>
   Future<void> _sendMedia(String? img, String? vid) async {
     try {
       HapticFeedback.lightImpact();
-      ChatTransportManager.instance.active.sendMessage(
-          conversationId: widget.chatId, imageUrl: img, videoUrl: vid);
+      ChatTransportManager.instance.active
+          .sendMessage(conversationId: _chatId, imageUrl: img, videoUrl: vid);
       _clearReply();
       await _scrollToBottom();
     } catch (_) {
@@ -584,8 +619,8 @@ class _EnhancedMessagingPageState extends ConsumerState<EnhancedMessagingPage>
 
   Future<void> _sendLocation() async {
     try {
-      ChatTransportManager.instance.active.sendMessage(
-          conversationId: widget.chatId, text: '📍 Location shared');
+      ChatTransportManager.instance.active
+          .sendMessage(conversationId: _chatId, text: '📍 Location shared');
       _clearReply();
       await _scrollToBottom();
     } catch (_) {
@@ -619,8 +654,8 @@ class _EnhancedMessagingPageState extends ConsumerState<EnhancedMessagingPage>
   Future<void> _addReaction(String id, String emoji) async {
     try {
       HapticFeedback.selectionClick();
-      ChatTransportManager.instance.active.addReaction(
-          conversationId: widget.chatId, messageId: id, emoji: emoji);
+      ChatTransportManager.instance.active
+          .addReaction(conversationId: _chatId, messageId: id, emoji: emoji);
     } catch (_) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -648,15 +683,14 @@ class _EnhancedMessagingPageState extends ConsumerState<EnhancedMessagingPage>
   @override
   Widget build(BuildContext context) {
     final theme = FlutterFlowTheme.of(context);
-    final messagesAsync =
-        ref.watch(_enhancedMessagesStreamProvider(widget.chatId));
+    final messagesAsync = ref.watch(_enhancedMessagesStreamProvider(_chatId));
     final typingData = ref
-        .watch(_typingStreamProvider(widget.chatId))
+        .watch(_typingStreamProvider(_chatId))
         .maybeWhen(data: (d) => d, orElse: () => <String, dynamic>{});
     final online = ref
-        .watch(_onlineUsersProvider(widget.chatId))
+        .watch(_onlineUsersProvider(_chatId))
         .maybeWhen(data: (s) => s, orElse: () => <String>{});
-    ref.listen(_enhancedMessagesStreamProvider(widget.chatId), (prev, next) {
+    ref.listen(_enhancedMessagesStreamProvider(_chatId), (prev, next) {
       next.whenData((msgs) {
         if (!_isAtBottom && prev != null) {
           prev.whenData((old) {
@@ -799,7 +833,7 @@ class _EnhancedMessagingPageState extends ConsumerState<EnhancedMessagingPage>
                     await WebRTCCallService.instance.callPeer(
                       toUserId: widget.recipientUserId,
                       isVideo: true,
-                      conversationId: widget.chatId,
+                      conversationId: _chatId,
                     );
                   } catch (_) {
                     if (!mounted) return;
@@ -835,7 +869,7 @@ class _EnhancedMessagingPageState extends ConsumerState<EnhancedMessagingPage>
                     await WebRTCCallService.instance.callPeer(
                       toUserId: widget.recipientUserId,
                       isVideo: false,
-                      conversationId: widget.chatId,
+                      conversationId: _chatId,
                     );
                   } catch (_) {
                     if (!mounted) return;
@@ -858,7 +892,7 @@ class _EnhancedMessagingPageState extends ConsumerState<EnhancedMessagingPage>
                 if (!mounted) return;
                 Navigator.of(context).push(MaterialPageRoute(
                   builder: (_) => GroupCallScreen(
-                    conversationId: widget.chatId,
+                    conversationId: _chatId,
                     isVideo: false,
                   ),
                 ));
@@ -870,7 +904,7 @@ class _EnhancedMessagingPageState extends ConsumerState<EnhancedMessagingPage>
                 if (!mounted) return;
                 Navigator.of(context).push(MaterialPageRoute(
                   builder: (_) => GroupCallScreen(
-                    conversationId: widget.chatId,
+                    conversationId: _chatId,
                     isVideo: true,
                   ),
                 ));

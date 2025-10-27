@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
 import '../../flutter_flow/flutter_flow_theme.dart';
 import '../../backend/webrtc_group_call_service.dart';
+import '../../backend/api_service.dart';
 
 class GroupCallScreen extends StatefulWidget {
   const GroupCallScreen(
@@ -18,6 +19,7 @@ class _GroupCallScreenState extends State<GroupCallScreen> {
   List<String> _participants = [];
   bool _micOn = true;
   bool _camOn = true;
+  final Map<String, String> _nameCache = {};
 
   @override
   void initState() {
@@ -30,6 +32,10 @@ class _GroupCallScreenState extends State<GroupCallScreen> {
     svc.participantsStream.listen((list) {
       if (!mounted) return;
       setState(() => _participants = List<String>.from(list));
+      // Resolve names for new participants in the background
+      for (final uid in list) {
+        _ensureName(uid);
+      }
     });
   }
 
@@ -173,6 +179,25 @@ class _GroupCallScreenState extends State<GroupCallScreen> {
         child: const Center(child: CircularProgressIndicator()),
       );
     }
-    return _tile(userId, r);
+    final label = _nameCache[userId] ?? userId;
+    if (!_nameCache.containsKey(userId)) {
+      // Best-effort resolve without blocking UI
+      _ensureName(userId);
+    }
+    return _tile(label, r);
+  }
+
+  Future<void> _ensureName(String userId) async {
+    if (userId.isEmpty || _nameCache.containsKey(userId)) return;
+    try {
+      final prof = await ApiService.instance.getUserProfileById(userId);
+      final dn = (prof?['displayName']?.toString() ?? '').trim();
+      if (!mounted) return;
+      if (dn.isNotEmpty) {
+        setState(() => _nameCache[userId] = dn);
+      }
+    } catch (_) {
+      // ignore
+    }
   }
 }

@@ -366,7 +366,10 @@ router.get('/count', authenticateUser, async (req, res) => {
     }, {} as Record<string, number>);
 
     // Add total count
-    result.total = Object.values(result).reduce((sum, count) => sum + count, 0);
+    result.total = (Object.values(result) as number[]).reduce(
+      (sum: number, count: number) => sum + count,
+      0
+    );
 
     res.json(result);
   } catch (error) {

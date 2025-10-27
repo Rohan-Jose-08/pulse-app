@@ -71,8 +71,8 @@ router.post('/:pulseId/invite', authenticateUser, async (req, res) => {
       return res.status(403).json({ error: 'Only pulse participants can invite others' });
     }
 
-    const invitations = [];
-    const errors = [];
+  const invitations: any[] = [];
+  const errors: { userId: string; error: string }[] = [];
 
     for (const inviteeId of userIds) {
       if (inviteeId === inviterId) {

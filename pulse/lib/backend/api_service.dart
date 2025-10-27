@@ -2104,8 +2104,7 @@ class ApiService {
       if (token == null) return false;
       final url = '$_baseUrl/invitations/$invitationId/respond';
       final resp = await _client.post(Uri.parse(url),
-          headers: _getHeaders(token),
-          body: jsonEncode({'action': accept ? 'ACCEPT' : 'DECLINE'}));
+          headers: _getHeaders(token), body: jsonEncode({'accept': accept}));
       if (resp.statusCode >= 200 && resp.statusCode < 300) {
         return true;
       }

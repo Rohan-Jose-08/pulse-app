@@ -131,6 +131,12 @@ class _LiveGroupChatPageState extends ConsumerState<LiveGroupChatPage>
   }
 
   void _setupSocketListeners() {
+    // Cancel any existing subscriptions first to prevent duplicates
+    _msgSub?.cancel();
+    _typingSub?.cancel();
+    _ackSub?.cancel();
+
+    // Set up fresh listeners
     _msgSub = SocketService.instance.messages.listen(_onSocketMessage);
     _typingSub = SocketService.instance.typing.listen(_onTyping);
     _ackSub = SocketService.instance.acks.listen((ack) {
@@ -172,8 +178,13 @@ class _LiveGroupChatPageState extends ConsumerState<LiveGroupChatPage>
         return;
       }
 
-      // New message
+      // New message - check for duplicates
       final msg = _LiveMsg.fromJson(map);
+
+      // Prevent duplicate messages
+      final isDuplicate = _messages.any((m) => m.id == msg.id);
+      if (isDuplicate) return;
+
       setState(() => _messages.add(msg));
       _messageCount++;
       _maybeCelebrate();
@@ -837,7 +848,8 @@ class _LiveGroupChatPageState extends ConsumerState<LiveGroupChatPage>
 
   Widget _messageBubble(_LiveMsg m, bool header, FlutterFlowTheme t) {
     final mine = m.senderId == currentUserUid;
-    final name = _resolveName(m.senderId) ?? 'User';
+    // Use senderName from message first, then fall back to member index
+    final name = m.senderName ?? _resolveName(m.senderId) ?? 'User';
 
     return GestureDetector(
       onDoubleTap: () => _quickReaction('❤️'),
@@ -1554,6 +1566,9 @@ class _AddMembersSheet extends StatelessWidget {
 class _LiveMsg {
   final String id;
   final String senderId;
+  final String? senderName;
+  final String? senderPhotoUrl;
+  final String? conversationId;
   final String? text;
   final String? imageUrl;
   final String? videoUrl;
@@ -1563,6 +1578,9 @@ class _LiveMsg {
   _LiveMsg({
     required this.id,
     required this.senderId,
+    this.senderName,
+    this.senderPhotoUrl,
+    this.conversationId,
     this.text,
     this.imageUrl,
     this.videoUrl,
@@ -1583,6 +1601,9 @@ class _LiveMsg {
     return _LiveMsg(
       id: json['id']?.toString() ?? '',
       senderId: json['senderId']?.toString() ?? '',
+      senderName: json['senderName']?.toString(),
+      senderPhotoUrl: json['senderPhotoUrl']?.toString(),
+      conversationId: json['conversationId']?.toString(),
       text: json['text']?.toString(),
       imageUrl: json['imageUrl']?.toString(),
       videoUrl: json['videoUrl']?.toString(),
@@ -1595,6 +1616,9 @@ class _LiveMsg {
   _LiveMsg copyWith({
     String? id,
     String? senderId,
+    String? senderName,
+    String? senderPhotoUrl,
+    String? conversationId,
     String? text,
     String? imageUrl,
     String? videoUrl,
@@ -1604,6 +1628,9 @@ class _LiveMsg {
     return _LiveMsg(
       id: id ?? this.id,
       senderId: senderId ?? this.senderId,
+      senderName: senderName ?? this.senderName,
+      senderPhotoUrl: senderPhotoUrl ?? this.senderPhotoUrl,
+      conversationId: conversationId ?? this.conversationId,
       text: text ?? this.text,
       imageUrl: imageUrl ?? this.imageUrl,
       videoUrl: videoUrl ?? this.videoUrl,
@@ -1613,7 +1640,7 @@ class _LiveMsg {
   }
 }
 
-// Floating reaction model (keep existing)
+// Floating reaction model
 class _FloatingReaction {
   final String id;
   final String emoji;

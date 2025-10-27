@@ -106,13 +106,13 @@ class _LiveGroupChatPageState extends ConsumerState<LiveGroupChatPage>
     try {
       // Connect socket
       await SocketService.instance.connect();
+      // Setup listeners ASAP to avoid missing early events
+      _setupSocketListeners();
+      // Join the requested conversation room (may be normalized later)
       SocketService.instance.joinConversation(_chatId);
 
-      // Load messages
+      // Load messages and normalize conversation id if needed
       await _bootstrap();
-
-      // Setup listeners
-      _setupSocketListeners();
 
       if (mounted) {
         setState(() => _isLoading = false);
@@ -142,9 +142,54 @@ class _LiveGroupChatPageState extends ConsumerState<LiveGroupChatPage>
       try {
         final cid = (ack['conversationId'] ?? ack['id'])?.toString();
         if (cid != null && cid.isNotEmpty && cid != _chatId) {
+          // Leave old room and join canonical conversation id from ack
+          final old = _chatId;
           setState(() => _chatId = cid);
+          if (old.isNotEmpty) {
+            SocketService.instance.leaveConversation(old);
+          }
           SocketService.instance.joinConversation(_chatId);
         }
+      } catch (_) {}
+    });
+
+    // Listen for group call started/stopped to surface join UI
+    SocketService.instance.groupCallStarted.listen((m) async {
+      try {
+        if (m['conversationId']?.toString() != _chatId) return;
+        final isVideo = m['isVideo'] == true;
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            behavior: SnackBarBehavior.floating,
+            content: Text(isVideo
+                ? 'Group video call started'
+                : 'Group voice call started'),
+            action: SnackBarAction(
+              label: 'Join',
+              onPressed: () async {
+                if (isVideo) {
+                  final res = await [Permission.microphone, Permission.camera]
+                      .request();
+                  if (res[Permission.microphone]?.isGranted != true ||
+                      res[Permission.camera]?.isGranted != true) return;
+                } else {
+                  final p = await Permission.microphone.request();
+                  if (!p.isGranted) return;
+                }
+                if (!mounted) return;
+                Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (_) => GroupCallScreen(
+                      conversationId: _chatId,
+                      isVideo: isVideo,
+                    ),
+                  ),
+                );
+              },
+            ),
+          ),
+        );
       } catch (_) {}
     });
   }
@@ -154,6 +199,22 @@ class _LiveGroupChatPageState extends ConsumerState<LiveGroupChatPage>
     final msgs = (res?['messages'] as List<dynamic>? ?? [])
         .map((m) => _LiveMsg.fromJson(m as Map<String, dynamic>))
         .toList();
+    // If API returns messages with a canonical conversationId that differs,
+    // switch rooms so live updates arrive for this chat.
+    if (msgs.isNotEmpty) {
+      final canonicalId = msgs.first.conversationId;
+      if (canonicalId != null &&
+          canonicalId.isNotEmpty &&
+          canonicalId != _chatId) {
+        final old = _chatId;
+        setState(() => _chatId = canonicalId);
+        if (old.isNotEmpty) {
+          SocketService.instance.leaveConversation(old);
+        }
+        SocketService.instance.joinConversation(_chatId);
+      }
+    }
+
     setState(() => _messages.addAll(msgs));
 
     // Fetch pulse status if this is a pulse group chat
@@ -1963,6 +2024,7 @@ class _LiveMsg {
   final String? videoUrl;
   final DateTime timestamp;
   final Map<String, List<String>> reactions;
+  final String? conversationId;
 
   _LiveMsg({
     required this.id,
@@ -1972,6 +2034,7 @@ class _LiveMsg {
     this.videoUrl,
     required this.timestamp,
     required this.reactions,
+    this.conversationId,
   });
 
   factory _LiveMsg.fromJson(Map<String, dynamic> json) {
@@ -1993,6 +2056,7 @@ class _LiveMsg {
       timestamp: DateTime.tryParse(json['createdAt']?.toString() ?? '') ??
           DateTime.now(),
       reactions: reactions,
+      conversationId: json['conversationId']?.toString(),
     );
   }
 

@@ -3,6 +3,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 const express_1 = require("express");
 const client_1 = require("@prisma/client");
 const auth_1 = require("firebase-admin/auth");
+const geolocation_1 = require("../services/geolocation");
 const router = (0, express_1.Router)();
 const prisma = new client_1.PrismaClient();
 // GET /api/pulses - Get all pulses for the authenticated user
@@ -31,30 +32,67 @@ router.get('/', async (req, res) => {
                 ]
             },
             include: {
-                author: {
-                    select: {
-                        id: true,
-                        displayName: true,
-                        email: true,
-                    }
-                },
-                participants: {
-                    select: {
-                        id: true,
-                        displayName: true,
-                        email: true,
-                    }
-                }
+                author: { select: { id: true, displayName: true, email: true } },
+                participants: { select: { id: true, displayName: true, email: true } },
+                location: { select: { id: true, name: true, city: true, country: true, latitude: true, longitude: true } }
             },
-            orderBy: {
-                eventTime: 'asc'
-            }
+            orderBy: { eventTime: 'asc' }
         });
         res.json(pulses);
     }
     catch (error) {
         console.error('Error fetching pulses:', error);
         res.status(500).json({ error: 'Internal server error' });
+    }
+});
+// GET /api/pulses/nearby?lat=&lng=&radiusKm=
+router.get('/nearby', async (req, res) => {
+    try {
+        const authHeader = req.headers.authorization;
+        if (!authHeader || !authHeader.startsWith('Bearer ')) {
+            return res.status(401).json({ error: 'Unauthorized' });
+        }
+        console.log('[GET] /pulses/nearby', req.query);
+        const { lat, lng, radiusKm = '10' } = req.query;
+        if (!lat || !lng) {
+            console.log('Missing lat/lng');
+            return res.status(400).json({ error: 'lat and lng are required' });
+        }
+        const latitude = parseFloat(lat);
+        const longitude = parseFloat(lng);
+        const radius = parseFloat(radiusKm);
+        if ([latitude, longitude, radius].some(v => isNaN(v))) {
+            console.log('Invalid numeric parameters', { latitude, longitude, radius });
+            return res.status(400).json({ error: 'Invalid numeric parameters' });
+        }
+        const bbox = (0, geolocation_1.boundingBox)(latitude, longitude, radius);
+        // Bounding box search via related Location, only public pulses
+        const rough = await prisma.pulse.findMany({
+            where: {
+                location: { latitude: { gte: bbox.minLat, lte: bbox.maxLat }, longitude: { gte: bbox.minLng, lte: bbox.maxLng } },
+                isPublic: true,
+            },
+            include: {
+                author: { select: { id: true, displayName: true, email: true } },
+                participants: { select: { id: true, displayName: true, email: true } },
+                location: { select: { id: true, name: true, city: true, country: true, latitude: true, longitude: true } }
+            },
+            take: 1000
+        });
+        const precise = rough.map(p => {
+            if (!p.location)
+                return null;
+            const d = (0, geolocation_1.haversineKm)(p.location.latitude, p.location.longitude, latitude, longitude);
+            return d <= radius ? { ...p, distanceKm: d } : null;
+        }).filter(Boolean);
+        precise.sort((a, b) => a.distanceKm - b.distanceKm);
+        const response = { center: { latitude, longitude }, radiusKm: radius, count: precise.length, pulses: precise.slice(0, 500) };
+        console.log('Nearby pulses response:', JSON.stringify(response));
+        return res.status(200).json(response);
+    }
+    catch (e) {
+        console.error('nearby pulses error', e);
+        res.status(500).json({ error: 'Failed nearby pulses search' });
     }
 });
 // POST /api/pulses/:id/join - Join a pulse
