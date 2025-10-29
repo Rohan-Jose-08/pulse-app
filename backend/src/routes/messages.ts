@@ -732,6 +732,21 @@ router.get('/conversations-pulse', authenticateUser, async (req, res) => {
 				});
 			}
 
+			// 2b) ALSO fetch regular Conversations with pulseId (for unified conversation support)
+			if (pulseIds.length) {
+				const regularPulseConvos = await prisma.conversation.findMany({
+					where: { 
+						pulseId: { in: pulseIds },
+						participants: { some: { id: me } }
+					},
+					include: {
+						participants: { select: { id: true, displayName: true, profileImageUrl: true } },
+						pulse: { select: { id: true, title: true, imageUrl: true } },
+					},
+				});
+				convos.push(...regularPulseConvos);
+			}
+
 			const byPulseId = new Map<string, any>(convos.map((c: any) => [c.pulseId, c]));
 			const toEnsureCreate = pulseIds.filter(pid => !byPulseId.has(pid));
 
@@ -768,7 +783,15 @@ router.get('/conversations-pulse', authenticateUser, async (req, res) => {
 				}
 			}
 
-			// 4) Ensure user is participant in each convo they are in
+			// 4) Deduplicate conversations by ID (in case same conversation exists in both tables)
+			const seenIds = new Set<string>();
+			convos = convos.filter((c: any) => {
+				if (seenIds.has(c.id)) return false;
+				seenIds.add(c.id);
+				return true;
+			});
+
+			// 5) Ensure user is participant in each convo they are in
 			for (const c of convos) {
 				const isParticipant = (c.participants as any[]).some((p: any) => p.id === me);
 				if (!isParticipant) {
@@ -782,7 +805,7 @@ router.get('/conversations-pulse', authenticateUser, async (req, res) => {
 				}
 			}
 
-			// 5) Sort by updatedAt desc (fallback to createdAt)
+			// 6) Sort by updatedAt desc (fallback to createdAt)
 			convos.sort((a: any, b: any) => {
 				const ta = new Date(a.updatedAt || a.createdAt).getTime();
 				const tb = new Date(b.updatedAt || b.createdAt).getTime();

@@ -1612,10 +1612,60 @@ io.on('connection', (socket: any) => {
   socket.on('join:conversation', (conversationId: string) => {
     socket.join(`conversation:${conversationId}`);
     try { console.log('[socket] join:conversation', { userId: user.id, socketId: socket.id, conversationId }); } catch (_) {}
+    
+    // Send active call status if there's an ongoing call
+    try {
+      const members = activeGroupCalls.get(conversationId);
+      if (members && members.size > 0) {
+        const meta = groupCallMeta.get(conversationId);
+        const participants = Array.from(members);
+        socket.emit('groupcall:status', {
+          conversationId,
+          isActive: true,
+          isVideo: meta?.isVideo ?? true,
+          participants,
+        });
+      }
+    } catch (e) {
+      console.error('[socket] join:conversation - failed to send call status', e);
+    }
   });
 
   socket.on('leave:conversation', (conversationId: string) => {
     socket.leave(`conversation:${conversationId}`);
+  });
+
+  // Request all active calls for user's conversations
+  socket.on('groupcall:request-all-status', async () => {
+    try {
+      console.log('[socket] Received groupcall:request-all-status from user:', user.id);
+      const conversations = await (prisma as any).conversation.findMany({
+        where: { participants: { some: { id: user.id } } },
+        select: { id: true }
+      });
+      console.log('[socket] User has', conversations.length, 'conversations');
+      
+      const activeCallsForUser: any[] = [];
+      for (const conv of conversations) {
+        const members = activeGroupCalls.get(conv.id);
+        if (members && members.size > 0) {
+          const meta = groupCallMeta.get(conv.id);
+          console.log('[socket] Active call found in conversation', conv.id, 'with', members.size, 'participants');
+          activeCallsForUser.push({
+            conversationId: conv.id,
+            isActive: true,
+            isVideo: meta?.isVideo ?? true,
+            participants: Array.from(members),
+          });
+        }
+      }
+      
+      console.log('[socket] Emitting groupcall:all-status with', activeCallsForUser.length, 'active calls');
+      // Send all active calls to this socket
+      socket.emit('groupcall:all-status', { activeCalls: activeCallsForUser });
+    } catch (e) {
+      console.error('[socket] groupcall:request-all-status error', e);
+    }
   });
 
   socket.on('message:send', async (payload: { conversationId: string; text?: string; imageUrl?: string; videoUrl?: string; repliedToId?: string }) => {

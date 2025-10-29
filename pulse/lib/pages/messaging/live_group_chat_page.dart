@@ -77,10 +77,21 @@ class _LiveGroupChatPageState extends ConsumerState<LiveGroupChatPage>
   DateTime? _pulseActiveFrom;
   DateTime? _pulseActiveUntil;
 
+  // Active call state
+  bool _isCallActive = false;
+  bool _isCallVideo = true;
+  int _callParticipantCount = 0;
+  List<String> _callParticipants = [];
+
   // Socket subscriptions
   StreamSubscription<Map<String, dynamic>>? _msgSub;
   StreamSubscription<Map<String, dynamic>>? _typingSub;
   StreamSubscription<Map<String, dynamic>>? _ackSub;
+  StreamSubscription<Map<String, dynamic>>? _gcStartedSub;
+  StreamSubscription<Map<String, dynamic>>? _gcStoppedSub;
+  StreamSubscription<Map<String, dynamic>>? _gcParticipantsSub;
+  StreamSubscription<Map<String, dynamic>>? _gcParticipantJoinedSub;
+  StreamSubscription<Map<String, dynamic>>? _gcParticipantLeftSub;
   late String _chatId;
 
   // Member index
@@ -153,52 +164,120 @@ class _LiveGroupChatPageState extends ConsumerState<LiveGroupChatPage>
       } catch (_) {}
     });
 
-    // Listen for group call started/stopped to surface join UI
-    SocketService.instance.groupCallStarted.listen((m) async {
+    // Listen for group call events to show Discord-style status bar
+    _gcStartedSub = SocketService.instance.groupCallStarted.listen((m) async {
       try {
         if (m['conversationId']?.toString() != _chatId) return;
         final isVideo = m['isVideo'] == true;
-        if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            behavior: SnackBarBehavior.floating,
-            content: Text(isVideo
-                ? 'Group video call started'
-                : 'Group voice call started'),
-            action: SnackBarAction(
-              label: 'Join',
-              onPressed: () async {
-                if (isVideo) {
-                  final res = await [Permission.microphone, Permission.camera]
-                      .request();
-                  if (res[Permission.microphone]?.isGranted != true ||
-                      res[Permission.camera]?.isGranted != true) return;
-                } else {
-                  final p = await Permission.microphone.request();
-                  if (!p.isGranted) return;
-                }
-                if (!mounted) return;
-                Navigator.of(context).push(
-                  MaterialPageRoute(
-                    builder: (_) => GroupCallScreen(
-                      conversationId: _chatId,
-                      isVideo: isVideo,
-                    ),
-                  ),
-                );
-              },
-            ),
-          ),
-        );
+
+        // Update state to show call banner
+        if (mounted) {
+          setState(() {
+            _isCallActive = true;
+            _isCallVideo = isVideo;
+            _callParticipantCount = 0;
+            _callParticipants = [];
+          });
+
+          // Light haptic feedback
+          await HapticUtils.light();
+        }
+      } catch (_) {}
+    });
+
+    _gcStoppedSub = SocketService.instance.groupCallStopped.listen((m) async {
+      try {
+        if (m['conversationId']?.toString() != _chatId) return;
+
+        if (mounted) {
+          setState(() {
+            _isCallActive = false;
+            _callParticipantCount = 0;
+            _callParticipants = [];
+          });
+        }
+      } catch (_) {}
+    });
+
+    _gcParticipantsSub =
+        SocketService.instance.groupCallParticipants.listen((m) async {
+      try {
+        if (m['conversationId']?.toString() != _chatId) return;
+        final participants = (m['participants'] as List?)?.cast<String>() ?? [];
+
+        if (mounted) {
+          setState(() {
+            _callParticipants = participants;
+            _callParticipantCount = participants.length;
+            if (participants.isNotEmpty) _isCallActive = true;
+          });
+        }
+      } catch (_) {}
+    });
+
+    _gcParticipantJoinedSub =
+        SocketService.instance.groupCallParticipantJoined.listen((m) async {
+      try {
+        if (m['conversationId']?.toString() != _chatId) return;
+        final userId = m['userId']?.toString();
+
+        if (userId != null && mounted) {
+          setState(() {
+            if (!_callParticipants.contains(userId)) {
+              _callParticipants.add(userId);
+              _callParticipantCount = _callParticipants.length;
+            }
+          });
+        }
+      } catch (_) {}
+    });
+
+    _gcParticipantLeftSub =
+        SocketService.instance.groupCallParticipantLeft.listen((m) async {
+      try {
+        if (m['conversationId']?.toString() != _chatId) return;
+        final userId = m['userId']?.toString();
+
+        if (userId != null && mounted) {
+          setState(() {
+            _callParticipants.remove(userId);
+            _callParticipantCount = _callParticipants.length;
+          });
+        }
+      } catch (_) {}
+    });
+
+    // Listen for call status updates (sent when joining conversation)
+    SocketService.instance.groupCallStatus.listen((m) async {
+      try {
+        if (m['conversationId']?.toString() != _chatId) return;
+        final isActive = m['isActive'] == true;
+        final isVideo = m['isVideo'] == true;
+        final participants = (m['participants'] as List?)?.cast<String>() ?? [];
+
+        if (mounted && isActive) {
+          setState(() {
+            _isCallActive = true;
+            _isCallVideo = isVideo;
+            _callParticipants = participants;
+            _callParticipantCount = participants.length;
+          });
+          print(
+              '[LiveGroupChat] Restored active call state: ${participants.length} participants');
+        }
       } catch (_) {}
     });
   }
 
   Future<void> _bootstrap() async {
+    print('[LiveGroupChat] Bootstrap starting with chatId: $_chatId');
     final res = await ApiService.instance.listMessages(_chatId);
     final msgs = (res?['messages'] as List<dynamic>? ?? [])
         .map((m) => _LiveMsg.fromJson(m as Map<String, dynamic>))
         .toList();
+
+    print('[LiveGroupChat] Loaded ${msgs.length} messages');
+
     // If API returns messages with a canonical conversationId that differs,
     // switch rooms so live updates arrive for this chat.
     if (msgs.isNotEmpty) {
@@ -207,6 +286,8 @@ class _LiveGroupChatPageState extends ConsumerState<LiveGroupChatPage>
           canonicalId.isNotEmpty &&
           canonicalId != _chatId) {
         final old = _chatId;
+        print(
+            '[LiveGroupChat] Switching conversation ID from $old to $canonicalId');
         setState(() => _chatId = canonicalId);
         if (old.isNotEmpty) {
           SocketService.instance.leaveConversation(old);
@@ -222,7 +303,26 @@ class _LiveGroupChatPageState extends ConsumerState<LiveGroupChatPage>
       await _fetchPulseStatus();
     }
 
+    // Check for active group calls
+    await _checkActiveCall();
+
     _jumpBottom();
+    print('[LiveGroupChat] Bootstrap complete, final chatId: $_chatId');
+  }
+
+  /// Check if there's an active group call when entering the chat
+  Future<void> _checkActiveCall() async {
+    try {
+      // Simply listen for the socket events - if there's an active call,
+      // the groupcall:started event would have been emitted already and stored.
+      // The listeners will update state if new events come in.
+
+      // For now, we rely on the backend to maintain state and broadcast updates.
+      // When someone starts/joins/leaves a call, we'll get notified via socket.
+      print('[LiveGroupChat] Active call listeners set up for $_chatId');
+    } catch (e) {
+      print('[LiveGroupChat] Error checking active call: $e');
+    }
   }
 
   Future<void> _fetchPulseStatus() async {
@@ -266,7 +366,13 @@ class _LiveGroupChatPageState extends ConsumerState<LiveGroupChatPage>
   void _onSocketMessage(dynamic raw) {
     try {
       final map = Map<String, dynamic>.from(raw as Map);
-      if (map['conversationId'] != _chatId) return;
+      print(
+          '[LiveGroupChat] Received socket message: ${map['id']}, conversationId: ${map['conversationId']}, expected: $_chatId');
+
+      if (map['conversationId'] != _chatId) {
+        print('[LiveGroupChat] Message ignored - wrong conversation');
+        return;
+      }
 
       final maybeId = map['id']?.toString() ?? map['messageId']?.toString();
 
@@ -282,8 +388,17 @@ class _LiveGroupChatPageState extends ConsumerState<LiveGroupChatPage>
         return;
       }
 
-      // New message
+      // New message - check for duplicates
       final msg = _LiveMsg.fromJson(map);
+
+      // Prevent duplicate messages
+      final isDuplicate = _messages.any((m) => m.id == msg.id);
+      if (isDuplicate) {
+        print('[LiveGroupChat] Duplicate message ignored: ${msg.id}');
+        return;
+      }
+
+      print('[LiveGroupChat] Adding new message: ${msg.id}');
       setState(() => _messages.add(msg));
       _messageCount++;
       _maybeCelebrate();
@@ -292,7 +407,9 @@ class _LiveGroupChatPageState extends ConsumerState<LiveGroupChatPage>
 
       // ✨ UX: Haptic feedback for new messages
       HapticUtils.light();
-    } catch (_) {}
+    } catch (e) {
+      print('[LiveGroupChat] Error processing socket message: $e');
+    }
   }
 
   void _handleReactionUpdate(String messageId, dynamic reactions) {
@@ -374,23 +491,38 @@ class _LiveGroupChatPageState extends ConsumerState<LiveGroupChatPage>
     final txt = _input.text.trim();
     if (txt.isEmpty || _sending) return;
 
+    print('[LiveGroupChat] Sending message to conversation: $_chatId');
     setState(() => _sending = true);
 
     // ✨ UX: Haptic feedback on send
     await HapticUtils.medium();
 
     try {
+      // Ensure socket is connected before sending
+      if (!SocketService.instance.isConnected) {
+        print('[LiveGroupChat] Socket not connected, reconnecting...');
+        await SocketService.instance.connect();
+        // Give socket time to establish connection
+        await Future.delayed(const Duration(milliseconds: 500));
+      }
+
+      print('[LiveGroupChat] Socket connected, sending message');
       SocketService.instance.sendMessage(
         conversationId: _chatId,
         text: txt,
       );
       _input.clear();
       _setTyping(false);
+
+      // Wait a bit for the socket to emit before scrolling
+      await Future.delayed(const Duration(milliseconds: 100));
       _animateToBottom();
 
+      print('[LiveGroupChat] Message sent successfully');
       // ✨ UX: Success feedback
       await HapticUtils.light();
     } catch (e) {
+      print('[LiveGroupChat] Error sending message: $e');
       // ✨ UX: Error feedback
       await HapticUtils.error();
       if (mounted) {
@@ -708,6 +840,11 @@ class _LiveGroupChatPageState extends ConsumerState<LiveGroupChatPage>
     _msgSub?.cancel();
     _typingSub?.cancel();
     _ackSub?.cancel();
+    _gcStartedSub?.cancel();
+    _gcStoppedSub?.cancel();
+    _gcParticipantsSub?.cancel();
+    _gcParticipantJoinedSub?.cancel();
+    _gcParticipantLeftSub?.cancel();
     super.dispose();
   }
 
@@ -795,6 +932,8 @@ class _LiveGroupChatPageState extends ConsumerState<LiveGroupChatPage>
         Column(
           children: [
             _topBar(theme, isDark),
+            // Discord-style active call status bar
+            if (_isCallActive) _callStatusBar(theme),
             Expanded(child: _chatFeed(theme)),
             if (_someoneTyping) _typingBubble(theme),
             _quickReactions(theme),
@@ -960,6 +1099,165 @@ class _LiveGroupChatPageState extends ConsumerState<LiveGroupChatPage>
         ],
       ),
     );
+  }
+
+  /// Discord-style active call status bar
+  Widget _callStatusBar(FlutterFlowTheme t) {
+    return GestureDetector(
+      onTap: () async {
+        // Join the active call
+        await HapticUtils.medium();
+
+        if (_isCallVideo) {
+          final res =
+              await [Permission.microphone, Permission.camera].request();
+          if (res[Permission.microphone]?.isGranted != true ||
+              res[Permission.camera]?.isGranted != true) {
+            if (mounted) {
+              CustomSnackbar.showWarning(
+                context,
+                message: 'Camera and microphone permissions required',
+              );
+            }
+            return;
+          }
+        } else {
+          final p = await Permission.microphone.request();
+          if (!p.isGranted) {
+            if (mounted) {
+              CustomSnackbar.showWarning(
+                context,
+                message: 'Microphone permission required',
+              );
+            }
+            return;
+          }
+        }
+
+        if (!mounted) return;
+        Navigator.of(context).push(
+          MaterialPageRoute(
+            builder: (_) => GroupCallScreen(
+              conversationId: _chatId,
+              isVideo: _isCallVideo,
+            ),
+          ),
+        );
+      },
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+        decoration: BoxDecoration(
+          gradient: LinearGradient(
+            colors: [
+              (_isCallVideo ? Colors.purple : Colors.green).withOpacity(0.85),
+              (_isCallVideo ? Colors.deepPurple : Colors.teal)
+                  .withOpacity(0.85),
+            ],
+          ),
+          boxShadow: [
+            BoxShadow(
+              color: (_isCallVideo ? Colors.purple : Colors.green)
+                  .withOpacity(0.3),
+              blurRadius: 8,
+              offset: const Offset(0, 2),
+            )
+          ],
+        ),
+        child: Row(
+          children: [
+            // Animated pulsing indicator
+            TweenAnimationBuilder<double>(
+              tween: Tween(begin: 0.8, end: 1.2),
+              duration: const Duration(milliseconds: 1000),
+              curve: Curves.easeInOut,
+              builder: (context, scale, child) {
+                return Transform.scale(
+                  scale: scale,
+                  child: Container(
+                    width: 32,
+                    height: 32,
+                    decoration: BoxDecoration(
+                      color: Colors.white.withOpacity(0.25),
+                      shape: BoxShape.circle,
+                    ),
+                    child: Icon(
+                      _isCallVideo
+                          ? Icons.videocam_rounded
+                          : Icons.call_rounded,
+                      color: Colors.white,
+                      size: 18,
+                    ),
+                  ),
+                );
+              },
+              onEnd: () {
+                // Restart animation
+                if (mounted) setState(() {});
+              },
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    _isCallVideo ? 'Video Call Active' : 'Voice Call Active',
+                    style: t.titleSmall.override(
+                      color: Colors.white,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    _callParticipantCount > 0
+                        ? '$_callParticipantCount ${_callParticipantCount == 1 ? "person" : "people"} in call'
+                        : 'Tap to join',
+                    style: t.bodySmall.override(
+                      color: Colors.white.withOpacity(0.9),
+                      fontSize: 12,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            // Join button
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(20),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withOpacity(0.2),
+                    blurRadius: 4,
+                    offset: const Offset(0, 2),
+                  )
+                ],
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(
+                    Icons.arrow_forward_rounded,
+                    color: _isCallVideo ? Colors.purple : Colors.green,
+                    size: 16,
+                  ),
+                  const SizedBox(width: 4),
+                  Text(
+                    'Join',
+                    style: t.bodyMedium.override(
+                      color: _isCallVideo ? Colors.purple : Colors.green,
+                      fontWeight: FontWeight.w700,
+                      fontSize: 14,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    ).animate().slideY(begin: -1, duration: 300.ms, curve: Curves.easeOut);
   }
 
   Future<void> _startVoiceCall() async {

@@ -3,6 +3,7 @@ import 'package:flutter_webrtc/flutter_webrtc.dart';
 import '../../flutter_flow/flutter_flow_theme.dart';
 import '../../backend/webrtc_group_call_service.dart';
 import '../../backend/api_service.dart';
+import '../../auth/firebase_auth/auth_util.dart';
 
 class GroupCallScreen extends StatefulWidget {
   const GroupCallScreen(
@@ -37,6 +38,13 @@ class _GroupCallScreenState extends State<GroupCallScreen> {
         _ensureName(uid);
       }
     });
+    // Listen for remote stream updates to trigger UI rebuild
+    svc.remoteStreamUpdates.listen((userId) {
+      if (!mounted) return;
+      print(
+          '[GroupCallScreen] Remote stream received for $userId, rebuilding UI');
+      setState(() {});
+    });
   }
 
   @override
@@ -69,8 +77,10 @@ class _GroupCallScreenState extends State<GroupCallScreen> {
               crossAxisCount: 2,
               padding: const EdgeInsets.all(12),
               children: [
-                _tile('You', svc.localRenderer),
-                for (final uid in _participants) _remoteTile(uid),
+                _tile('You', svc.localRenderer, mirror: true),
+                // Filter out current user to avoid showing yourself twice
+                for (final uid in _participants)
+                  if (uid != currentUserUid) _remoteTile(uid),
               ],
             ),
           ),
@@ -146,7 +156,7 @@ class _GroupCallScreenState extends State<GroupCallScreen> {
     );
   }
 
-  Widget _tile(String label, RTCVideoRenderer renderer) {
+  Widget _tile(String label, RTCVideoRenderer renderer, {bool mirror = false}) {
     return ClipRRect(
       borderRadius: BorderRadius.circular(12),
       child: Stack(children: [
@@ -154,7 +164,7 @@ class _GroupCallScreenState extends State<GroupCallScreen> {
             color: Colors.black54,
             child: RTCVideoView(renderer,
                 objectFit: RTCVideoViewObjectFit.RTCVideoViewObjectFitCover,
-                mirror: true)),
+                mirror: mirror)),
         Positioned(
           left: 8,
           bottom: 8,
@@ -184,7 +194,8 @@ class _GroupCallScreenState extends State<GroupCallScreen> {
       // Best-effort resolve without blocking UI
       _ensureName(userId);
     }
-    return _tile(label, r);
+    // Remote videos should NOT be mirrored
+    return _tile(label, r, mirror: false);
   }
 
   Future<void> _ensureName(String userId) async {

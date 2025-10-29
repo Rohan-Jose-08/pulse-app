@@ -32,6 +32,8 @@ class SocketService {
   // --- Group call signaling streams ---
   final _gcStarted = StreamController<Map<String, dynamic>>.broadcast();
   final _gcStopped = StreamController<Map<String, dynamic>>.broadcast();
+  final _gcStatus = StreamController<Map<String, dynamic>>.broadcast();
+  final _gcAllStatus = StreamController<Map<String, dynamic>>.broadcast();
   final _gcParticipants = StreamController<Map<String, dynamic>>.broadcast();
   final _gcParticipantJoined =
       StreamController<Map<String, dynamic>>.broadcast();
@@ -57,6 +59,8 @@ class SocketService {
   // Group call
   Stream<Map<String, dynamic>> get groupCallStarted => _gcStarted.stream;
   Stream<Map<String, dynamic>> get groupCallStopped => _gcStopped.stream;
+  Stream<Map<String, dynamic>> get groupCallStatus => _gcStatus.stream;
+  Stream<Map<String, dynamic>> get groupCallAllStatus => _gcAllStatus.stream;
   Stream<Map<String, dynamic>> get groupCallParticipants =>
       _gcParticipants.stream;
   Stream<Map<String, dynamic>> get groupCallParticipantJoined =>
@@ -175,6 +179,10 @@ class SocketService {
         (data) => _gcStarted.add(Map<String, dynamic>.from(data)));
     _socket!.on('groupcall:stopped',
         (data) => _gcStopped.add(Map<String, dynamic>.from(data)));
+    _socket!.on('groupcall:status',
+        (data) => _gcStatus.add(Map<String, dynamic>.from(data)));
+    _socket!.on('groupcall:all-status',
+        (data) => _gcAllStatus.add(Map<String, dynamic>.from(data)));
     _socket!.on('groupcall:participants',
         (data) => _gcParticipants.add(Map<String, dynamic>.from(data)));
     _socket!.on('groupcall:participant-joined',
@@ -333,6 +341,13 @@ class SocketService {
 
   void leaveGroupCall({required String conversationId}) {
     _emitOrQueue('groupcall:leave', {'conversationId': conversationId});
+  }
+
+  void requestAllCallStatuses() {
+    // ignore: avoid_print
+    print(
+        '[SocketService] Emitting groupcall:request-all-status, connected: $isConnected');
+    _emitOrQueue('groupcall:request-all-status', {});
   }
 
   void sendGroupSignal({

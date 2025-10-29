@@ -75,10 +75,22 @@ class _GroupChatPageState extends ConsumerState<GroupChatPage>
   final _random = Random();
   String? _reactingToMessageId;
 
+  // Call status state
+  bool _isCallActive = false;
+  bool _isCallVideo = true;
+  int _callParticipantCount = 0;
+  List<String> _callParticipants = [];
+
   // Socket subscriptions
   StreamSubscription<Map<String, dynamic>>? _msgSub;
   StreamSubscription<Map<String, dynamic>>? _typingSub;
   StreamSubscription<Map<String, dynamic>>? _ackSub;
+  StreamSubscription<Map<String, dynamic>>? _gcStartedSub;
+  StreamSubscription<Map<String, dynamic>>? _gcStoppedSub;
+  StreamSubscription<Map<String, dynamic>>? _gcParticipantsSub;
+  StreamSubscription<Map<String, dynamic>>? _gcParticipantJoinedSub;
+  StreamSubscription<Map<String, dynamic>>? _gcParticipantLeftSub;
+  StreamSubscription<Map<String, dynamic>>? _gcStatusSub;
   late String _chatId;
 
   // Member index for quick lookups
@@ -142,6 +154,104 @@ class _GroupChatPageState extends ConsumerState<GroupChatPage>
         if (cid != null && cid.isNotEmpty && cid != _chatId) {
           setState(() => _chatId = cid);
           SocketService.instance.joinConversation(_chatId);
+        }
+      } catch (_) {}
+    });
+
+    // Group call event listeners
+    _gcStartedSub = SocketService.instance.groupCallStarted.listen((m) async {
+      try {
+        if (m['conversationId']?.toString() != _chatId) return;
+        final isVideo = m['isVideo'] == true;
+
+        if (mounted) {
+          setState(() {
+            _isCallActive = true;
+            _isCallVideo = isVideo;
+            _callParticipantCount = 0;
+            _callParticipants = [];
+          });
+          await HapticUtils.light();
+        }
+      } catch (_) {}
+    });
+
+    _gcStoppedSub = SocketService.instance.groupCallStopped.listen((m) async {
+      try {
+        if (m['conversationId']?.toString() != _chatId) return;
+
+        if (mounted) {
+          setState(() {
+            _isCallActive = false;
+            _callParticipantCount = 0;
+            _callParticipants = [];
+          });
+        }
+      } catch (_) {}
+    });
+
+    _gcParticipantsSub =
+        SocketService.instance.groupCallParticipants.listen((m) async {
+      try {
+        if (m['conversationId']?.toString() != _chatId) return;
+        final participants = (m['participants'] as List?)?.cast<String>() ?? [];
+
+        if (mounted) {
+          setState(() {
+            _callParticipants = participants;
+            _callParticipantCount = participants.length;
+            if (participants.isNotEmpty) _isCallActive = true;
+          });
+        }
+      } catch (_) {}
+    });
+
+    _gcParticipantJoinedSub =
+        SocketService.instance.groupCallParticipantJoined.listen((m) async {
+      try {
+        if (m['conversationId']?.toString() != _chatId) return;
+        final userId = m['userId']?.toString();
+
+        if (userId != null && mounted) {
+          setState(() {
+            if (!_callParticipants.contains(userId)) {
+              _callParticipants.add(userId);
+              _callParticipantCount = _callParticipants.length;
+            }
+          });
+        }
+      } catch (_) {}
+    });
+
+    _gcParticipantLeftSub =
+        SocketService.instance.groupCallParticipantLeft.listen((m) async {
+      try {
+        if (m['conversationId']?.toString() != _chatId) return;
+        final userId = m['userId']?.toString();
+
+        if (userId != null && mounted) {
+          setState(() {
+            _callParticipants.remove(userId);
+            _callParticipantCount = _callParticipants.length;
+          });
+        }
+      } catch (_) {}
+    });
+
+    _gcStatusSub = SocketService.instance.groupCallStatus.listen((m) async {
+      try {
+        if (m['conversationId']?.toString() != _chatId) return;
+        final isActive = m['isActive'] == true;
+        final isVideo = m['isVideo'] == true;
+        final participants = (m['participants'] as List?)?.cast<String>() ?? [];
+
+        if (mounted && isActive) {
+          setState(() {
+            _isCallActive = true;
+            _isCallVideo = isVideo;
+            _callParticipants = participants;
+            _callParticipantCount = participants.length;
+          });
         }
       } catch (_) {}
     });
@@ -597,6 +707,12 @@ class _GroupChatPageState extends ConsumerState<GroupChatPage>
     _msgSub?.cancel();
     _typingSub?.cancel();
     _ackSub?.cancel();
+    _gcStartedSub?.cancel();
+    _gcStoppedSub?.cancel();
+    _gcParticipantsSub?.cancel();
+    _gcParticipantJoinedSub?.cancel();
+    _gcParticipantLeftSub?.cancel();
+    _gcStatusSub?.cancel();
     super.dispose();
   }
 
@@ -759,6 +875,9 @@ class _GroupChatPageState extends ConsumerState<GroupChatPage>
           children: [
             // Quick reactions bar
             _quickReactions(theme),
+
+            // Call status bar (Discord-style)
+            if (_isCallActive) _callStatusBar(theme),
 
             // Messages list
             Expanded(child: _chatFeed(theme)),
@@ -1274,6 +1393,164 @@ class _GroupChatPageState extends ConsumerState<GroupChatPage>
           begin: const Offset(0.7, 0.7),
           end: const Offset(1.0, 1.0),
         );
+  }
+
+  Widget _callStatusBar(FlutterFlowTheme t) {
+    return GestureDetector(
+      onTap: () async {
+        // Join the active call
+        await HapticUtils.medium();
+
+        if (_isCallVideo) {
+          final res =
+              await [Permission.microphone, Permission.camera].request();
+          if (res[Permission.microphone]?.isGranted != true ||
+              res[Permission.camera]?.isGranted != true) {
+            if (mounted) {
+              CustomSnackbar.showWarning(
+                context,
+                message: 'Camera and microphone permissions required',
+              );
+            }
+            return;
+          }
+        } else {
+          final p = await Permission.microphone.request();
+          if (!p.isGranted) {
+            if (mounted) {
+              CustomSnackbar.showWarning(
+                context,
+                message: 'Microphone permission required',
+              );
+            }
+            return;
+          }
+        }
+
+        if (!mounted) return;
+        Navigator.of(context).push(
+          MaterialPageRoute(
+            builder: (_) => GroupCallScreen(
+              conversationId: _chatId,
+              isVideo: _isCallVideo,
+            ),
+          ),
+        );
+      },
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+        decoration: BoxDecoration(
+          gradient: LinearGradient(
+            colors: [
+              (_isCallVideo ? Colors.purple : Colors.green).withOpacity(0.85),
+              (_isCallVideo ? Colors.deepPurple : Colors.teal)
+                  .withOpacity(0.85),
+            ],
+          ),
+          boxShadow: [
+            BoxShadow(
+              color: (_isCallVideo ? Colors.purple : Colors.green)
+                  .withOpacity(0.3),
+              blurRadius: 8,
+              offset: const Offset(0, 2),
+            )
+          ],
+        ),
+        child: Row(
+          children: [
+            // Animated pulsing indicator
+            TweenAnimationBuilder<double>(
+              tween: Tween(begin: 0.8, end: 1.2),
+              duration: const Duration(milliseconds: 1000),
+              curve: Curves.easeInOut,
+              builder: (context, scale, child) {
+                return Transform.scale(
+                  scale: scale,
+                  child: Container(
+                    width: 32,
+                    height: 32,
+                    decoration: BoxDecoration(
+                      color: Colors.white.withOpacity(0.25),
+                      shape: BoxShape.circle,
+                    ),
+                    child: Icon(
+                      _isCallVideo
+                          ? Icons.videocam_rounded
+                          : Icons.call_rounded,
+                      color: Colors.white,
+                      size: 18,
+                    ),
+                  ),
+                );
+              },
+              onEnd: () {
+                // Restart animation
+                if (mounted) setState(() {});
+              },
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    _isCallVideo ? 'Video Call Active' : 'Voice Call Active',
+                    style: t.titleSmall.override(
+                      color: Colors.white,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    _callParticipantCount > 0
+                        ? '$_callParticipantCount ${_callParticipantCount == 1 ? "person" : "people"} in call'
+                        : 'Tap to join',
+                    style: t.bodySmall.override(
+                      color: Colors.white.withOpacity(0.9),
+                      fontSize: 12,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            // Join button
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(20),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withOpacity(0.2),
+                    blurRadius: 4,
+                    offset: const Offset(0, 2),
+                  )
+                ],
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(
+                    Icons.arrow_forward_rounded,
+                    color: _isCallVideo ? Colors.purple : Colors.green,
+                    size: 16,
+                  ),
+                  const SizedBox(width: 4),
+                  Text(
+                    'Join',
+                    style: t.bodyMedium.override(
+                      color: _isCallVideo ? Colors.purple : Colors.green,
+                      fontWeight: FontWeight.w700,
+                      fontSize: 14,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    ).animate().slideY(begin: -1, duration: 300.ms, curve: Curves.easeOut);
   }
 
   Widget _quickReactions(FlutterFlowTheme t) {

@@ -12,8 +12,6 @@ import 'group_chat_page.dart';
 import 'create_group_chat_page.dart';
 import '/flutter_flow/flutter_flow_util.dart';
 import 'dart:async';
-import 'package:permission_handler/permission_handler.dart';
-import '../calling/group_call_screen.dart';
 
 class MessagesHubWidget extends StatefulWidget {
   const MessagesHubWidget({super.key});
@@ -132,7 +130,19 @@ final _groupConversationsProvider = StreamProvider.autoDispose
   Future<void> _load({bool silent = false}) async {
     try {
       final list = await ApiService.instance.listGroupConversations();
-      items = (list ?? []).whereType<Map<String, dynamic>>().toList();
+      final allItems = (list ?? []).whereType<Map<String, dynamic>>().toList();
+
+      // Deduplicate by conversation ID
+      final seenIds = <String>{};
+      items = allItems.where((c) {
+        final id = c['id']?.toString();
+        if (id == null || id.isEmpty)
+          return true; // Keep items without IDs just in case
+        if (seenIds.contains(id)) return false;
+        seenIds.add(id);
+        return true;
+      }).toList();
+
       items.sort((a, b) {
         final ta = DateTime.tryParse(a['updatedAt']?.toString() ?? '') ??
             DateTime.fromMillisecondsSinceEpoch(0);
@@ -143,7 +153,8 @@ final _groupConversationsProvider = StreamProvider.autoDispose
       _lastReload = DateTime.now();
       controller.add(items);
       if (!silent) {
-        print('[GroupChats] loaded ${items.length} group conversations');
+        print(
+            '[GroupChats] loaded ${items.length} group conversations (${allItems.length} before dedup)');
       }
     } catch (e) {
       if (!silent) {
@@ -166,6 +177,17 @@ final _groupConversationsProvider = StreamProvider.autoDispose
         items[idx]['updatedAt'] =
             msg['createdAt']?.toString() ?? DateTime.now().toIso8601String();
         items = List<Map<String, dynamic>>.from(items);
+
+        // Deduplicate after update (in case message triggered a duplicate)
+        final seenIds = <String>{};
+        items = items.where((c) {
+          final id = c['id']?.toString();
+          if (id == null || id.isEmpty) return true;
+          if (seenIds.contains(id)) return false;
+          seenIds.add(id);
+          return true;
+        }).toList();
+
         items.sort((a, b) {
           final ta = DateTime.tryParse(a['updatedAt']?.toString() ?? '') ??
               DateTime.fromMillisecondsSinceEpoch(0);
@@ -210,11 +232,42 @@ final _pulseConversationsProvider = StreamProvider.autoDispose
 
   (() async {
     final list = await ApiService.instance.listPulseConversations();
-    items = (list ?? []).where(isPulseGroup).toList();
+    final pulseGroupList = (list ?? []).where(isPulseGroup).toList();
+
+    // Debug: Log all IDs before dedup
+    print(
+        '[PulseChats] RAW IDs from API: ${list?.map((c) => c['id']).toList()}');
+    print(
+        '[PulseChats] After isPulseGroup filter: ${pulseGroupList.map((c) => c['id']).toList()}');
+
+    // Filter out conversations with no messages (empty auto-created pulse chats)
+    final withMessages = pulseGroupList.where((c) {
+      final lastMessage = c['lastMessageText']?.toString();
+      return lastMessage != null && lastMessage.isNotEmpty;
+    }).toList();
+
+    // Deduplicate by conversation ID
+    final seenIds = <String>{};
+    final duplicates = <String>[];
+    items = withMessages.where((c) {
+      final id = c['id']?.toString();
+      if (id == null || id.isEmpty) return false;
+      if (seenIds.contains(id)) {
+        duplicates.add(id);
+        return false;
+      }
+      seenIds.add(id);
+      return true;
+    }).toList();
+
     // Debug: counts
     // ignore: avoid_print
     print(
-        '[PulseChats] total=${list?.length ?? 0} pulseGroups=${items.length}');
+        '[PulseChats] total=${list?.length ?? 0} pulseGroups=${pulseGroupList.length} afterDedup=${items.length}');
+    if (duplicates.isNotEmpty) {
+      print(
+          '[PulseChats] ⚠️ REMOVED ${duplicates.length} duplicates: $duplicates');
+    }
     if (items.isEmpty && (list?.isNotEmpty ?? false)) {
       final withPulseField =
           (list ?? []).where((c) => c['pulseId'] != null).take(3).toList();
@@ -230,7 +283,24 @@ final _pulseConversationsProvider = StreamProvider.autoDispose
 
   final sub = SocketService.instance.conversationUpdates.listen((_) async {
     final list = await ApiService.instance.listPulseConversations();
-    items = (list ?? []).where(isPulseGroup).toList();
+    final pulseGroupList = (list ?? []).where(isPulseGroup).toList();
+
+    // Filter out conversations with no messages (empty auto-created pulse chats)
+    final withMessages = pulseGroupList.where((c) {
+      final lastMessage = c['lastMessageText']?.toString();
+      return lastMessage != null && lastMessage.isNotEmpty;
+    }).toList();
+
+    // Deduplicate by conversation ID
+    final seenIds = <String>{};
+    items = withMessages.where((c) {
+      final id = c['id']?.toString();
+      if (id == null || id.isEmpty) return false;
+      if (seenIds.contains(id)) return false;
+      seenIds.add(id);
+      return true;
+    }).toList();
+
     controller.add(items);
   });
 
@@ -251,6 +321,8 @@ class _MessagesHubWidgetState extends State<MessagesHubWidget> {
   StreamSubscription? _gcStartedSub;
   StreamSubscription? _gcStoppedSub;
   StreamSubscription? _gcParticipantsSub;
+  StreamSubscription? _gcStatusSub;
+  StreamSubscription? _gcAllStatusSub;
   final Set<String> _activeCalls = <String>{};
   final Map<String, bool> _activeCallIsVideo = <String, bool>{};
   final Map<String, int> _activeCallParticipantCounts = <String, int>{};
@@ -268,6 +340,8 @@ class _MessagesHubWidgetState extends State<MessagesHubWidget> {
     _gcStartedSub?.cancel();
     _gcStoppedSub?.cancel();
     _gcParticipantsSub?.cancel();
+    _gcStatusSub?.cancel();
+    _gcAllStatusSub?.cancel();
     super.dispose();
   }
 
@@ -285,52 +359,26 @@ class _MessagesHubWidgetState extends State<MessagesHubWidget> {
     });
   }
 
-  /// Global listener for group call start events to surface a join banner
+  /// Global listener for group call start events
   void _listenToGroupCalls() {
+    print('[MessagesHub] Setting up group call listeners');
     _gcStartedSub = SocketService.instance.groupCallStarted.listen((m) async {
       try {
+        print('[MessagesHub] groupCallStarted event received: $m');
         final cid = m['conversationId']?.toString();
         if (cid == null || cid.isEmpty) return;
         final isVideo = m['isVideo'] == true;
         if (mounted) {
           setState(() {
+            print('[MessagesHub] Adding call from groupCallStarted: $cid');
+            print('[MessagesHub] setState called - widget should rebuild');
             _activeCalls.add(cid);
             _activeCallIsVideo[cid] = isVideo;
           });
         }
-        if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            behavior: SnackBarBehavior.floating,
-            content: Text(isVideo
-                ? 'Group video call started'
-                : 'Group voice call started'),
-            action: SnackBarAction(
-              label: 'Join',
-              onPressed: () async {
-                if (isVideo) {
-                  final res = await [Permission.microphone, Permission.camera]
-                      .request();
-                  if (res[Permission.microphone]?.isGranted != true ||
-                      res[Permission.camera]?.isGranted != true) return;
-                } else {
-                  final p = await Permission.microphone.request();
-                  if (!p.isGranted) return;
-                }
-                if (!mounted) return;
-                Navigator.of(context).push(
-                  MaterialPageRoute(
-                    builder: (_) => GroupCallScreen(
-                      conversationId: cid,
-                      isVideo: isVideo,
-                    ),
-                  ),
-                );
-              },
-            ),
-          ),
-        );
-      } catch (_) {}
+      } catch (e) {
+        print('[MessagesHub] Error in groupCallStarted: $e');
+      }
     });
 
     _gcStoppedSub = SocketService.instance.groupCallStopped.listen((m) async {
@@ -360,6 +408,67 @@ class _MessagesHubWidgetState extends State<MessagesHubWidget> {
           });
         }
       } catch (_) {}
+    });
+
+    // Listen for call status updates (sent when app starts or joins conversation)
+    _gcStatusSub = SocketService.instance.groupCallStatus.listen((m) async {
+      try {
+        final cid = m['conversationId']?.toString();
+        if (cid == null || cid.isEmpty) return;
+        final isActive = m['isActive'] == true;
+        final isVideo = m['isVideo'] == true;
+        final participants = (m['participants'] as List?)?.cast<String>() ?? [];
+
+        if (mounted && isActive) {
+          setState(() {
+            _activeCalls.add(cid);
+            _activeCallIsVideo[cid] = isVideo;
+            _activeCallParticipantCounts[cid] = participants.length;
+          });
+        }
+      } catch (_) {}
+    });
+
+    // Listen for bulk status updates (sent when app requests all call statuses)
+    _gcAllStatusSub =
+        SocketService.instance.groupCallAllStatus.listen((response) async {
+      try {
+        final activeCalls = (response['activeCalls'] as List?) ?? [];
+        if (mounted) {
+          setState(() {
+            for (final callData in activeCalls) {
+              if (callData is! Map<String, dynamic>) continue;
+              final cid = callData['conversationId']?.toString();
+              if (cid == null || cid.isEmpty) continue;
+              final isActive = callData['isActive'] == true;
+              final isVideo = callData['isVideo'] == true;
+              final participants =
+                  (callData['participants'] as List?)?.cast<String>() ?? [];
+
+              if (isActive) {
+                print(
+                    '[MessagesHub] Adding active call for conversation $cid with ${participants.length} participants');
+                _activeCalls.add(cid);
+                _activeCallIsVideo[cid] = isVideo;
+                _activeCallParticipantCounts[cid] = participants.length;
+              }
+            }
+            print(
+                '[MessagesHub] Current _activeCalls after update: $_activeCalls');
+          });
+        }
+      } catch (e) {
+        print('[MessagesHub] Error processing groupCallAllStatus: $e');
+      }
+    });
+
+    // Request all call statuses after a short delay to ensure socket is connected
+    print('[MessagesHub] Requesting all call statuses...');
+    Future.delayed(const Duration(milliseconds: 500), () {
+      if (mounted) {
+        print('[MessagesHub] Delayed request for all call statuses');
+        SocketService.instance.requestAllCallStatuses();
+      }
     });
   }
 
@@ -496,6 +605,75 @@ class _MessagesHubWidgetState extends State<MessagesHubWidget> {
         subtitle: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
+            // Active call status (Discord-style)
+            if (_activeCalls.contains(data['id']?.toString()))
+              Padding(
+                padding: const EdgeInsets.only(bottom: 4),
+                child: Row(
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 8, vertical: 4),
+                      decoration: BoxDecoration(
+                        color:
+                            (_activeCallIsVideo[data['id']?.toString()] == true
+                                    ? Colors.purple
+                                    : Colors.green)
+                                .withOpacity(0.15),
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(
+                          color:
+                              _activeCallIsVideo[data['id']?.toString()] == true
+                                  ? Colors.purple
+                                  : Colors.green,
+                          width: 1,
+                        ),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(
+                            _activeCallIsVideo[data['id']?.toString()] == true
+                                ? Icons.videocam_rounded
+                                : Icons.call_rounded,
+                            size: 14,
+                            color: _activeCallIsVideo[data['id']?.toString()] ==
+                                    true
+                                ? Colors.purple
+                                : Colors.green,
+                          ),
+                          const SizedBox(width: 4),
+                          Text(
+                            _activeCallParticipantCounts[
+                                        data['id']?.toString()] !=
+                                    null
+                                ? '${_activeCallParticipantCounts[data['id']?.toString()]} in call'
+                                : 'Call active',
+                            style: theme.bodySmall.override(
+                              color:
+                                  _activeCallIsVideo[data['id']?.toString()] ==
+                                          true
+                                      ? Colors.purple
+                                      : Colors.green,
+                              fontWeight: FontWeight.w600,
+                              fontSize: 11,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Text(
+                      'Tap to join',
+                      style: theme.bodySmall.override(
+                        color: theme.secondaryText.withOpacity(0.7),
+                        fontSize: 11,
+                        fontStyle: FontStyle.italic,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
             if (pulseId.isNotEmpty)
               Text(
                 'Pulse Group • $participantCount members',
@@ -633,6 +811,75 @@ class _MessagesHubWidgetState extends State<MessagesHubWidget> {
         subtitle: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
+            // Active call status (Discord-style)
+            if (_activeCalls.contains(data['id']?.toString()))
+              Padding(
+                padding: const EdgeInsets.only(bottom: 4),
+                child: Row(
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 8, vertical: 4),
+                      decoration: BoxDecoration(
+                        color:
+                            (_activeCallIsVideo[data['id']?.toString()] == true
+                                    ? Colors.purple
+                                    : Colors.green)
+                                .withOpacity(0.15),
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(
+                          color:
+                              _activeCallIsVideo[data['id']?.toString()] == true
+                                  ? Colors.purple
+                                  : Colors.green,
+                          width: 1,
+                        ),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(
+                            _activeCallIsVideo[data['id']?.toString()] == true
+                                ? Icons.videocam_rounded
+                                : Icons.call_rounded,
+                            size: 14,
+                            color: _activeCallIsVideo[data['id']?.toString()] ==
+                                    true
+                                ? Colors.purple
+                                : Colors.green,
+                          ),
+                          const SizedBox(width: 4),
+                          Text(
+                            _activeCallParticipantCounts[
+                                        data['id']?.toString()] !=
+                                    null
+                                ? '${_activeCallParticipantCounts[data['id']?.toString()]} in call'
+                                : 'Call active',
+                            style: theme.bodySmall.override(
+                              color:
+                                  _activeCallIsVideo[data['id']?.toString()] ==
+                                          true
+                                      ? Colors.purple
+                                      : Colors.green,
+                              fontWeight: FontWeight.w600,
+                              fontSize: 11,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Text(
+                      'Tap to join',
+                      style: theme.bodySmall.override(
+                        color: theme.secondaryText.withOpacity(0.7),
+                        fontSize: 11,
+                        fontStyle: FontStyle.italic,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
             if (description != null && description.isNotEmpty)
               Text(
                 description,
@@ -1003,7 +1250,33 @@ class _MessagesHubWidgetState extends State<MessagesHubWidget> {
                               }
                             } catch (_) {}
 
+                            // Debug: Check if any active calls are missing from the conversation list
+                            final allConvoIds = <String>{
+                              ...groupChats
+                                  .map((c) => c['id']?.toString())
+                                  .whereType<String>(),
+                              ...pulseChats
+                                  .map((c) => c['id']?.toString())
+                                  .whereType<String>(),
+                              ...displayDirectChats
+                                  .map((c) => c['id']?.toString())
+                                  .whereType<String>(),
+                            };
+                            final missingCallConvos = _activeCalls
+                                .where(
+                                    (callId) => !allConvoIds.contains(callId))
+                                .toSet();
+                            if (missingCallConvos.isNotEmpty) {
+                              print(
+                                  '[MessagesHub] ⚠️ WARNING: Active calls in conversations NOT in hub: $missingCallConvos');
+                              print(
+                                  '[MessagesHub] This means the API endpoints are not returning these conversations');
+                            }
+
+                            print(
+                                '[MessagesHub] Building ListView with _activeCalls: $_activeCalls');
                             return ListView(
+                              key: ValueKey(_activeCalls.join('_')),
                               children: [
                                 // Group Chats Section
                                 if (groupChats.isNotEmpty) ...[
