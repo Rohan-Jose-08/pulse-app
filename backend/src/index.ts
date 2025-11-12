@@ -608,6 +608,8 @@ app.get('/api/pulses/search', async (req, res) => {
 
 // New route to create a pulse (authentication required)
 app.post('/api/pulses', authenticateUser, async (req, res) => {
+  console.log('🎯 POST /api/pulses - Creating new pulse');
+  console.log('Request body:', JSON.stringify(req.body, null, 2));
   try {
   const { title, description, eventTime, isPublic, tags, imageUrl, placeId, activeFrom, activeUntil, activeDurationMinutes } = req.body;
     
@@ -713,22 +715,50 @@ app.post('/api/pulses', authenticateUser, async (req, res) => {
       }
     });
 
-    // Ensure a backing group conversation exists for this pulse (non-fatal if fails)
+    // Ensure a backing PulseConversation exists for this pulse (non-fatal if fails)
     try {
-      await (prisma as any).conversation.create({
-        data: {
-          pulse: { connect: { id: pulse.id } },
-          isGroup: true,
-          name: pulse.title,
-          avatarUrl: pulse.imageUrl ?? null,
-          participants: { connect: { id: pulse.authorId } },
+      const existingPconv = await (prisma as any).pulseConversation.findUnique({ 
+        where: { pulseId: pulse.id } 
+      }).catch(() => null);
+      
+      if (!existingPconv) {
+        console.log(`Creating PulseConversation for pulse ${pulse.id} (${pulse.title})`);
+        const newPconv = await (prisma as any).pulseConversation.create({
+          data: {
+            pulse: { connect: { id: pulse.id } },
+            participants: { connect: [{ id: pulse.authorId }] },
+            name: pulse.title,
+            avatarUrl: pulse.imageUrl ?? null,
+          }
+        });
+        console.log(`✅ Created PulseConversation ${newPconv.id} for pulse ${pulse.id}`);
+        
+        // Also ensure legacy Conversation exists for backward compatibility
+        try {
+          const legacyExists = await (prisma as any).conversation.findFirst({ 
+            where: { pulseId: pulse.id } 
+          });
+          if (!legacyExists) {
+            await (prisma as any).conversation.create({
+              data: {
+                id: newPconv.id, // Use same ID for compatibility
+                pulse: { connect: { id: pulse.id } },
+                isGroup: true,
+                name: pulse.title,
+                avatarUrl: pulse.imageUrl ?? null,
+                participants: { connect: [{ id: pulse.authorId }] },
+              }
+            });
+            console.log(`✅ Created legacy Conversation ${newPconv.id} for pulse ${pulse.id}`);
+          }
+        } catch (legacyErr: any) {
+          console.warn('Legacy conversation creation failed (non-critical):', legacyErr?.message);
         }
-      });
-    } catch (chatCreateErr: any) {
-      // Unique constraint on pulseId prevents duplicates; ignore if already exists
-      if (process.env.NODE_ENV !== 'production') {
-        console.warn('Pulse conversation creation skipped/failed:', chatCreateErr?.message || chatCreateErr);
+      } else {
+        console.log(`PulseConversation already exists for pulse ${pulse.id}`);
       }
+    } catch (chatCreateErr: any) {
+      console.error('❌ Pulse conversation creation failed for pulse', pulse.id, chatCreateErr?.message || chatCreateErr);
     }
     const now = new Date();
     const response = {

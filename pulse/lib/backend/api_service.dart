@@ -1308,6 +1308,143 @@ class ApiService {
     return null;
   }
 
+  // ============================================================================
+  // ML RECOMMENDATION METHODS
+  // ============================================================================
+
+  /// Get ML-powered personalized pulse recommendations
+  Future<List<Map<String, dynamic>>> getPersonalizedPulses({
+    double? latitude,
+    double? longitude,
+  }) async {
+    try {
+      final token = await _getAuthToken();
+      if (token == null) {
+        print(
+            'No authentication token available for personalized recommendations');
+        return [];
+      }
+
+      String url = '$_baseUrl/pulses/personalized';
+      if (latitude != null && longitude != null) {
+        url += '?latitude=$latitude&longitude=$longitude';
+      }
+
+      final response = await _client.get(
+        Uri.parse(url),
+        headers: _getHeaders(token),
+      );
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        if (data is Map && data['recommendations'] is List) {
+          final pulses =
+              List<Map<String, dynamic>>.from(data['recommendations']);
+
+          // Track that user viewed these recommendations (async, don't wait)
+          _trackRecommendationViews(
+              pulses.map((p) => p['id'].toString()).toList());
+
+          return pulses;
+        }
+      } else {
+        print(
+            'Failed to get personalized pulses: ${response.statusCode} - ${response.body}');
+      }
+      return [];
+    } catch (e) {
+      print('Error fetching personalized pulses: $e');
+      return [];
+    }
+  }
+
+  /// Track pulse interaction for ML training
+  Future<void> trackPulseInteraction({
+    required String pulseId,
+    required String interactionType,
+    int? durationSeconds,
+    String? source,
+  }) async {
+    try {
+      final token = await _getAuthToken();
+      if (token == null) return;
+
+      final url = '$_baseUrl/pulses/track-interaction';
+      await _client.post(
+        Uri.parse(url),
+        headers: _getHeaders(token),
+        body: jsonEncode({
+          'pulseId': pulseId,
+          'interactionType': interactionType,
+          'duration': durationSeconds,
+          'source': source,
+        }),
+      );
+    } catch (e) {
+      print('Error tracking pulse interaction: $e');
+    }
+  }
+
+  /// Track that user viewed recommendations (internal helper)
+  void _trackRecommendationViews(List<String> pulseIds) {
+    // Track asynchronously without blocking
+    Future.delayed(Duration.zero, () async {
+      for (final pulseId in pulseIds) {
+        await trackPulseInteraction(
+          pulseId: pulseId,
+          interactionType: 'recommendation_view',
+          source: 'feed',
+        );
+      }
+    });
+  }
+
+  /// Track that user clicked on a recommendation
+  Future<void> trackRecommendationClick(String pulseId) async {
+    await trackPulseInteraction(
+      pulseId: pulseId,
+      interactionType: 'recommendation_click',
+      source: 'feed',
+    );
+  }
+
+  /// Track that user viewed a pulse
+  Future<void> trackPulseView(String pulseId, {int? durationSeconds}) async {
+    await trackPulseInteraction(
+      pulseId: pulseId,
+      interactionType: 'view',
+      durationSeconds: durationSeconds,
+      source: 'feed',
+    );
+  }
+
+  /// Track that user joined a pulse
+  Future<void> trackPulseJoin(String pulseId) async {
+    await trackPulseInteraction(
+      pulseId: pulseId,
+      interactionType: 'join',
+      source: 'feed',
+    );
+  }
+
+  /// Track that user sent a message in a pulse
+  Future<void> trackPulseMessage(String pulseId) async {
+    await trackPulseInteraction(
+      pulseId: pulseId,
+      interactionType: 'message',
+      source: 'chat',
+    );
+  }
+
+  /// Track that user shared a pulse
+  Future<void> trackPulseShare(String pulseId) async {
+    await trackPulseInteraction(
+      pulseId: pulseId,
+      interactionType: 'share',
+      source: 'feed',
+    );
+  }
+
   // Profile-related methods
   Future<Map<String, dynamic>?> getUserProfile() async {
     // Ensure user exists in backend before fetching profile
@@ -2839,5 +2976,44 @@ class ApiService {
       print('Error deleting highlight: $e');
       return false;
     }
+  }
+
+  /// Search messages in a conversation
+  Future<List<Map<String, dynamic>>> searchMessages(
+    String conversationId,
+    String query, {
+    int limit = 50,
+  }) async {
+    try {
+      final token = await _getAuthToken();
+      if (token == null) {
+        print('No authentication token available');
+        return [];
+      }
+
+      final url = Uri.parse('$_baseUrl/conversations/$conversationId/search')
+          .replace(queryParameters: {
+        'q': query,
+        'limit': limit.toString(),
+      });
+
+      final response = await _client.get(
+        url,
+        headers: _getHeaders(token),
+      );
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        if (data is Map<String, dynamic> && data['results'] is List) {
+          return List<Map<String, dynamic>>.from(data['results']);
+        }
+      } else {
+        print(
+            'searchMessages failed: ${response.statusCode} - ${response.body}');
+      }
+    } catch (e) {
+      print('Error searchMessages: $e');
+    }
+    return [];
   }
 }

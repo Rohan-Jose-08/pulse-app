@@ -464,3 +464,73 @@ model Highlight {
   @@index([pulseId])
   @@index([createdAt])
 }
+
+// ============================================================================
+// ML RECOMMENDATION SYSTEM MODELS
+// ============================================================================
+
+// Track user interactions with pulses for ML training
+model PulseInteraction {
+  id              String   @id @default(cuid())
+  userId          String
+  pulseId         String
+  interactionType String   // 'view', 'join', 'message', 'invite', 'share', 'recommendation_view', 'recommendation_click'
+  duration        Int?     // Duration in seconds (for view interactions)
+  timestamp       DateTime @default(now())
+  
+  // Additional context
+  source          String?  // 'feed', 'map', 'recommendation', 'search', 'notification'
+  deviceType      String?  // 'ios', 'android', 'web'
+  
+  @@index([userId])
+  @@index([pulseId])
+  @@index([timestamp])
+  @@index([userId, timestamp])
+  @@index([interactionType])
+}
+
+// Store precomputed recommendations for fast retrieval
+model PulseRecommendation {
+  id           String   @id @default(cuid())
+  userId       String
+  pulseId      String
+  score        Float    // Recommendation score (0.0 - 1.0)
+  reason       String?  // Human-readable reason for recommendation
+  generatedAt  DateTime @default(now())
+  
+  // Track if user interacted with this recommendation
+  viewed       Boolean  @default(false)
+  clicked      Boolean  @default(false)
+  
+  @@index([userId, score(sort: Desc)])
+  @@index([generatedAt])
+  @@index([userId, generatedAt])
+}
+
+// User embeddings for similarity-based recommendations
+model UserEmbedding {
+  userId     String   @id
+  embedding  Float[]  // Vector embedding representation of user
+  updatedAt  DateTime @default(now())
+  
+  @@index([updatedAt])
+}
+
+// Cache user feature vectors for ML
+model UserFeatureCache {
+  userId                  String   @id
+  avgSessionDuration      Float?
+  preferredCategories     String[] // Most common categories user interacts with
+  preferredTimeSlots      String[] // Time of day user is most active
+  socialActivityScore     Float?   // Measure of social engagement
+  messagingFrequency      Float?   // Messages per session
+  inviteAcceptanceRate    Float?   // Ratio of accepted invites
+  lastPulseJoinedAt       DateTime?
+  totalPulsesJoined       Int      @default(0)
+  totalPulsesCreated      Int      @default(0)
+  avgDistanceKm           Float?   // Average distance of pulses user joins
+  
+  updatedAt               DateTime @default(now())
+  
+  @@index([updatedAt])
+}

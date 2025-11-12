@@ -13,6 +13,7 @@ import 'package:image_picker/image_picker.dart';
 import '../../auth/firebase_auth/auth_util.dart';
 import '../../backend/api_service.dart';
 import '../../backend/socket_service.dart';
+import '../../backend/chat_transport.dart';
 import '../../flutter_flow/flutter_flow_theme.dart';
 import '../../components/skeleton_loader.dart';
 import '../../components/error_state_widget.dart';
@@ -21,6 +22,7 @@ import '../../utils/haptic_utils.dart';
 import '../../utils/snackbar_utils.dart';
 import 'package:permission_handler/permission_handler.dart';
 import '../calling/group_call_screen.dart';
+import 'group_chat_info_page.dart';
 
 /// 🎨 REDESIGNED: Modern, polished group chat with enhanced UX
 ///
@@ -94,6 +96,9 @@ class _LiveGroupChatPageState extends ConsumerState<LiveGroupChatPage>
   StreamSubscription<Map<String, dynamic>>? _gcParticipantLeftSub;
   late String _chatId;
 
+  // Bluetooth transport mode
+  ChatTransportMode _transportMode = ChatTransportMode.network;
+
   // Member index
   late final Map<String, Map<String, dynamic>> _memberIndex = {
     for (final m in (widget.members ?? []))
@@ -115,12 +120,20 @@ class _LiveGroupChatPageState extends ConsumerState<LiveGroupChatPage>
     });
 
     try {
-      // Connect socket
-      await SocketService.instance.connect();
+      // Initialize transport manager
+      _transportMode = ChatTransportManager.instance.mode;
+      await ChatTransportManager.instance.ensureConnected();
+
+      // Connect socket for network mode
+      if (_transportMode == ChatTransportMode.network) {
+        await SocketService.instance.connect();
+      }
+
       // Setup listeners ASAP to avoid missing early events
       _setupSocketListeners();
+
       // Join the requested conversation room (may be normalized later)
-      SocketService.instance.joinConversation(_chatId);
+      ChatTransportManager.instance.active.joinConversation(_chatId);
 
       // Load messages and normalize conversation id if needed
       await _bootstrap();
@@ -147,22 +160,29 @@ class _LiveGroupChatPageState extends ConsumerState<LiveGroupChatPage>
   }
 
   void _setupSocketListeners() {
-    _msgSub = SocketService.instance.messages.listen(_onSocketMessage);
-    _typingSub = SocketService.instance.typing.listen(_onTyping);
-    _ackSub = SocketService.instance.acks.listen((ack) {
-      try {
-        final cid = (ack['conversationId'] ?? ack['id'])?.toString();
-        if (cid != null && cid.isNotEmpty && cid != _chatId) {
-          // Leave old room and join canonical conversation id from ack
-          final old = _chatId;
-          setState(() => _chatId = cid);
-          if (old.isNotEmpty) {
-            SocketService.instance.leaveConversation(old);
+    // Use ChatTransportManager for messages and typing
+    final transport = ChatTransportManager.instance.active;
+
+    _msgSub = transport.messages.listen(_onSocketMessage);
+    _typingSub = transport.typing.listen(_onTyping);
+
+    // For network mode, also listen to socket acks for conversation ID normalization
+    if (_transportMode == ChatTransportMode.network) {
+      _ackSub = SocketService.instance.acks.listen((ack) {
+        try {
+          final cid = (ack['conversationId'] ?? ack['id'])?.toString();
+          if (cid != null && cid.isNotEmpty && cid != _chatId) {
+            // Leave old room and join canonical conversation id from ack
+            final old = _chatId;
+            setState(() => _chatId = cid);
+            if (old.isNotEmpty) {
+              SocketService.instance.leaveConversation(old);
+            }
+            SocketService.instance.joinConversation(_chatId);
           }
-          SocketService.instance.joinConversation(_chatId);
-        }
-      } catch (_) {}
-    });
+        } catch (_) {}
+      });
+    }
 
     // Listen for group call events to show Discord-style status bar
     _gcStartedSub = SocketService.instance.groupCallStarted.listen((m) async {
@@ -271,16 +291,17 @@ class _LiveGroupChatPageState extends ConsumerState<LiveGroupChatPage>
 
   Future<void> _bootstrap() async {
     print('[LiveGroupChat] Bootstrap starting with chatId: $_chatId');
-    final res = await ApiService.instance.listMessages(_chatId);
-    final msgs = (res?['messages'] as List<dynamic>? ?? [])
-        .map((m) => _LiveMsg.fromJson(m as Map<String, dynamic>))
-        .toList();
+
+    // Use ChatTransportManager for loading initial messages
+    final rawMessages =
+        await ChatTransportManager.instance.initialMessages(_chatId);
+    final msgs = rawMessages.map((m) => _LiveMsg.fromJson(m)).toList();
 
     print('[LiveGroupChat] Loaded ${msgs.length} messages');
 
     // If API returns messages with a canonical conversationId that differs,
-    // switch rooms so live updates arrive for this chat.
-    if (msgs.isNotEmpty) {
+    // switch rooms so live updates arrive for this chat (network mode only).
+    if (_transportMode == ChatTransportMode.network && msgs.isNotEmpty) {
       final canonicalId = msgs.first.conversationId;
       if (canonicalId != null &&
           canonicalId.isNotEmpty &&
@@ -498,23 +519,18 @@ class _LiveGroupChatPageState extends ConsumerState<LiveGroupChatPage>
     await HapticUtils.medium();
 
     try {
-      // Ensure socket is connected before sending
-      if (!SocketService.instance.isConnected) {
-        print('[LiveGroupChat] Socket not connected, reconnecting...');
-        await SocketService.instance.connect();
-        // Give socket time to establish connection
-        await Future.delayed(const Duration(milliseconds: 500));
-      }
+      // Ensure transport is connected before sending
+      await ChatTransportManager.instance.ensureConnected();
 
-      print('[LiveGroupChat] Socket connected, sending message');
-      SocketService.instance.sendMessage(
+      print('[LiveGroupChat] Transport connected, sending message');
+      ChatTransportManager.instance.active.sendMessage(
         conversationId: _chatId,
         text: txt,
       );
       _input.clear();
       _setTyping(false);
 
-      // Wait a bit for the socket to emit before scrolling
+      // Wait a bit for the message to propagate before scrolling
       await Future.delayed(const Duration(milliseconds: 100));
       _animateToBottom();
 
@@ -542,7 +558,114 @@ class _LiveGroupChatPageState extends ConsumerState<LiveGroupChatPage>
   }
 
   void _setTyping(bool v) {
-    SocketService.instance.setTyping(_chatId, v);
+    ChatTransportManager.instance.active.setTyping(_chatId, v);
+  }
+
+  Future<void> _toggleTransportMode() async {
+    await HapticUtils.selection();
+
+    if (!mounted) return;
+    await showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (context) {
+        final t = FlutterFlowTheme.of(context);
+        return Container(
+          decoration: BoxDecoration(
+            color: t.secondaryBackground,
+            borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
+          ),
+          child: SafeArea(
+            child: Column(mainAxisSize: MainAxisSize.min, children: [
+              const SizedBox(height: 12),
+              Container(
+                width: 40,
+                height: 4,
+                decoration: BoxDecoration(
+                  color: t.secondaryText.withOpacity(.3),
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+              const SizedBox(height: 20),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16),
+                child: Text('Choose Connection Mode',
+                    style:
+                        t.headlineSmall.override(fontWeight: FontWeight.w700)),
+              ),
+              const SizedBox(height: 8),
+              ListTile(
+                leading: Icon(Icons.wifi_rounded, color: t.primary),
+                title: const Text('Network (Wi-Fi / Mobile Data)'),
+                subtitle: const Text('Full-featured with cloud sync'),
+                trailing: _transportMode == ChatTransportMode.network
+                    ? Icon(Icons.check, color: t.primary)
+                    : null,
+                onTap: () async {
+                  Navigator.pop(context);
+                  if (_transportMode != ChatTransportMode.network) {
+                    await _switchTransportMode(ChatTransportMode.network);
+                  }
+                },
+              ),
+              ListTile(
+                leading:
+                    Icon(Icons.bluetooth_rounded, color: Colors.blueAccent),
+                title: const Text('Bluetooth Mesh (Experimental)'),
+                subtitle: const Text('Peer-to-peer local messaging'),
+                trailing: _transportMode == ChatTransportMode.bluetooth
+                    ? const Icon(Icons.check, color: Colors.blueAccent)
+                    : null,
+                onTap: () async {
+                  Navigator.pop(context);
+                  if (_transportMode != ChatTransportMode.bluetooth) {
+                    await _switchTransportMode(ChatTransportMode.bluetooth);
+                  }
+                },
+              ),
+              const SizedBox(height: 4),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+                child: Text(
+                  'Bluetooth mode is experimental – messages are kept locally and broadcast to nearby devices.',
+                  style: t.bodySmall.override(color: t.secondaryText),
+                ),
+              )
+            ]),
+          ),
+        );
+      },
+    );
+  }
+
+  Future<void> _switchTransportMode(ChatTransportMode newMode) async {
+    setState(() => _transportMode = newMode);
+    ChatTransportManager.instance.mode = newMode;
+
+    // Cancel existing subscriptions
+    await _msgSub?.cancel();
+    await _typingSub?.cancel();
+    await _ackSub?.cancel();
+
+    // Reconnect with new transport
+    await ChatTransportManager.instance.ensureConnected();
+
+    // Re-setup listeners with new transport
+    final transport = ChatTransportManager.instance.active;
+    _msgSub = transport.messages.listen(_onSocketMessage);
+    _typingSub = transport.typing.listen(_onTyping);
+
+    // Join conversation with new transport
+    transport.joinConversation(_chatId);
+
+    if (mounted) {
+      CustomSnackbar.showInfo(
+        context,
+        message: newMode == ChatTransportMode.bluetooth
+            ? 'Switched to Bluetooth mode'
+            : 'Switched to Network mode',
+      );
+    }
   }
 
   String _buildStatusText() {
@@ -641,7 +764,8 @@ class _LiveGroupChatPageState extends ConsumerState<LiveGroupChatPage>
     // ✨ UX: Haptic feedback on reaction
     await HapticUtils.light();
     _spawnReaction(emoji);
-    SocketService.instance.sendMessage(conversationId: _chatId, text: emoji);
+    ChatTransportManager.instance.active
+        .sendMessage(conversationId: _chatId, text: emoji);
   }
 
   void _openAddMembers() async {
@@ -661,7 +785,22 @@ class _LiveGroupChatPageState extends ConsumerState<LiveGroupChatPage>
   void _openChatInfo() async {
     // ✨ UX: Haptic feedback
     await HapticUtils.selection();
-    CustomSnackbar.showInfo(context, message: 'Chat info coming soon!');
+
+    if (!mounted) return;
+
+    await Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => GroupChatInfoPage(
+          chatId: _chatId,
+          groupName: widget.groupName,
+          pulseName: widget.pulseName,
+          members: widget.members ?? [],
+          isPulseLive: _isPulseLive,
+          pulseActiveFrom: _pulseActiveFrom,
+          pulseActiveUntil: _pulseActiveUntil,
+        ),
+      ),
+    );
   }
 
   Future<void> _chooseAttachment() async {
@@ -747,7 +886,7 @@ class _LiveGroupChatPageState extends ConsumerState<LiveGroupChatPage>
       );
       final url = await uploadTask.ref.getDownloadURL();
 
-      SocketService.instance.sendMessage(
+      ChatTransportManager.instance.active.sendMessage(
         conversationId: _chatId,
         imageUrl: url,
       );
@@ -801,7 +940,7 @@ class _LiveGroupChatPageState extends ConsumerState<LiveGroupChatPage>
       );
       final url = await uploadTask.ref.getDownloadURL();
 
-      SocketService.instance.sendMessage(
+      ChatTransportManager.instance.active.sendMessage(
         conversationId: _chatId,
         videoUrl: url,
       );
@@ -887,10 +1026,13 @@ class _LiveGroupChatPageState extends ConsumerState<LiveGroupChatPage>
                       ),
                       const SizedBox(width: 8),
                     ],
-                    SkeletonLoader(
-                      width: MediaQuery.of(context).size.width * 0.6,
-                      height: 60,
-                      borderRadius: const BorderRadius.all(Radius.circular(18)),
+                    Flexible(
+                      child: SkeletonLoader(
+                        width: MediaQuery.of(context).size.width * 0.6,
+                        height: 60,
+                        borderRadius:
+                            const BorderRadius.all(Radius.circular(18)),
+                      ),
                     ),
                     if (index % 2 != 0) ...[
                       const SizedBox(width: 8),
@@ -936,13 +1078,13 @@ class _LiveGroupChatPageState extends ConsumerState<LiveGroupChatPage>
             if (_isCallActive) _callStatusBar(theme),
             Expanded(child: _chatFeed(theme)),
             if (_someoneTyping) _typingBubble(theme),
-            _quickReactions(theme),
+            // Quick reactions removed
             _composer(theme),
           ],
         ),
         _floatingReactionsLayer(),
         _confettiWidget(theme),
-        if (_reactingToMessageId != null) _emojiReactionOverlay(theme),
+        // Emoji reaction overlay removed
       ],
     );
   }
@@ -978,6 +1120,7 @@ class _LiveGroupChatPageState extends ConsumerState<LiveGroupChatPage>
                 Row(
                   children: [
                     Flexible(
+                      flex: 1,
                       child: Text(
                         widget.groupName,
                         style: t.titleMedium.override(
@@ -1071,30 +1214,83 @@ class _LiveGroupChatPageState extends ConsumerState<LiveGroupChatPage>
               ],
             ),
           ),
-          // Action buttons with haptic feedback
-          HapticIconButton(
-            icon: Icons.call_rounded,
-            color: t.primaryText,
-            onPressed: _startVoiceCall,
-            feedbackType: HapticsType.selection,
-          ),
-          HapticIconButton(
-            icon: Icons.videocam_rounded,
-            color: t.primaryText,
-            onPressed: _startVideoCall,
-            feedbackType: HapticsType.selection,
-          ),
-          HapticIconButton(
-            icon: Icons.person_add_alt_1_rounded,
-            color: t.primaryText,
-            onPressed: _openAddMembers,
-            feedbackType: HapticsType.selection,
-          ),
-          HapticIconButton(
-            icon: Icons.info_outline_rounded,
-            color: t.primaryText,
-            onPressed: _openChatInfo,
-            feedbackType: HapticsType.selection,
+          // Action buttons with haptic feedback - minimized to prevent overflow
+          Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              HapticIconButton(
+                icon: Icons.videocam_rounded,
+                color: t.primaryText,
+                onPressed: _startVideoCall,
+                feedbackType: HapticsType.selection,
+              ),
+              PopupMenuButton<String>(
+                icon: Icon(Icons.more_vert_rounded, color: t.primaryText),
+                onSelected: (value) {
+                  if (value == 'transport') {
+                    _toggleTransportMode();
+                  } else if (value == 'voice_call') {
+                    _startVoiceCall();
+                  } else if (value == 'add_members') {
+                    _openAddMembers();
+                  } else if (value == 'info') {
+                    _openChatInfo();
+                  }
+                },
+                itemBuilder: (context) => [
+                  PopupMenuItem(
+                    value: 'voice_call',
+                    child: Row(
+                      children: [
+                        Icon(Icons.call_rounded, color: t.primaryText),
+                        const SizedBox(width: 12),
+                        const Text('Voice Call'),
+                      ],
+                    ),
+                  ),
+                  PopupMenuItem(
+                    value: 'transport',
+                    child: Row(
+                      children: [
+                        Icon(
+                          _transportMode == ChatTransportMode.bluetooth
+                              ? Icons.bluetooth_rounded
+                              : Icons.wifi_rounded,
+                          color: _transportMode == ChatTransportMode.bluetooth
+                              ? Colors.blueAccent
+                              : t.primaryText,
+                        ),
+                        const SizedBox(width: 12),
+                        Text(_transportMode == ChatTransportMode.bluetooth
+                            ? 'Switch to Network'
+                            : 'Switch to Bluetooth'),
+                      ],
+                    ),
+                  ),
+                  PopupMenuItem(
+                    value: 'add_members',
+                    child: Row(
+                      children: [
+                        Icon(Icons.person_add_alt_1_rounded,
+                            color: t.primaryText),
+                        const SizedBox(width: 12),
+                        const Text('Add Members'),
+                      ],
+                    ),
+                  ),
+                  PopupMenuItem(
+                    value: 'info',
+                    child: Row(
+                      children: [
+                        Icon(Icons.info_outline_rounded, color: t.primaryText),
+                        const SizedBox(width: 12),
+                        const Text('Chat Info'),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ],
           ),
         ],
       ),
@@ -1346,10 +1542,7 @@ class _LiveGroupChatPageState extends ConsumerState<LiveGroupChatPage>
 
     return GestureDetector(
       onDoubleTap: () => _quickReaction('❤️'),
-      onLongPress: () {
-        HapticUtils.medium();
-        _startReactionInput(m);
-      },
+      // Long press reaction removed
       child: Container(
         margin: EdgeInsets.only(
           top: header ? 10 : 3,
@@ -1518,14 +1711,10 @@ class _LiveGroupChatPageState extends ConsumerState<LiveGroupChatPage>
                 children: [
                   for (final entry in m.reactions.entries)
                     _reactionChip(t, m, entry.key, entry.value),
-                  _addReactionChip(t, m),
+                  // Add reaction chip removed
                 ],
               ),
-            if (m.reactions.isEmpty)
-              Padding(
-                padding: const EdgeInsets.only(top: 8),
-                child: _addReactionChip(t, m),
-              ),
+            // Add reaction chip removed for empty reactions
           ],
         ),
       ),
@@ -1629,13 +1818,13 @@ class _LiveGroupChatPageState extends ConsumerState<LiveGroupChatPage>
         child: Stack(
           children: [
             Positioned(
-              left: 0,
-              right: 0,
+              left: 16,
+              right: 16,
               bottom: MediaQuery.of(context).viewInsets.bottom + 90,
               child: Center(
                 child: Container(
                   padding: const EdgeInsets.symmetric(
-                    horizontal: 24,
+                    horizontal: 20,
                     vertical: 16,
                   ),
                   decoration: BoxDecoration(
@@ -1653,15 +1842,18 @@ class _LiveGroupChatPageState extends ConsumerState<LiveGroupChatPage>
                     mainAxisSize: MainAxisSize.min,
                     children: [
                       const Icon(Icons.touch_app_rounded, size: 20),
-                      const SizedBox(width: 10),
-                      Text(
-                        'Choose an emoji',
-                        style: t.bodyMedium.override(
-                          fontWeight: FontWeight.w600,
+                      const SizedBox(width: 8),
+                      Flexible(
+                        child: Text(
+                          'Choose an emoji',
+                          style: t.bodyMedium.override(
+                            fontWeight: FontWeight.w600,
+                          ),
+                          overflow: TextOverflow.ellipsis,
                         ),
                       ),
                       if (_reactionInputCtl.text.isNotEmpty) ...[
-                        const SizedBox(width: 12),
+                        const SizedBox(width: 8),
                         Text(
                           _reactionInputCtl.text.characters.last,
                           style: const TextStyle(fontSize: 28),
@@ -1680,7 +1872,7 @@ class _LiveGroupChatPageState extends ConsumerState<LiveGroupChatPage>
                           ),
                         ),
                       ),
-                      const SizedBox(width: 12),
+                      const SizedBox(width: 8),
                       HapticIconButton(
                         icon: Icons.close_rounded,
                         onPressed: _cancelReactionInput,
@@ -1792,22 +1984,28 @@ class _LiveGroupChatPageState extends ConsumerState<LiveGroupChatPage>
 
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-        children: reactions.map((emoji) {
-          return AnimatedButton(
-            onPressed: () => _quickReaction(emoji),
-            scaleAmount: 0.85,
-            backgroundColor: t.secondaryBackground.withOpacity(.8),
-            borderRadius: BorderRadius.circular(20),
-            padding: const EdgeInsets.all(10),
-            elevation: 2,
-            child: Text(
-              emoji,
-              style: const TextStyle(fontSize: 24),
-            ),
-          );
-        }).toList(),
+      child: SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+          children: reactions.map((emoji) {
+            return Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 4),
+              child: AnimatedButton(
+                onPressed: () => _quickReaction(emoji),
+                scaleAmount: 0.85,
+                backgroundColor: t.secondaryBackground.withOpacity(.8),
+                borderRadius: BorderRadius.circular(20),
+                padding: const EdgeInsets.all(10),
+                elevation: 2,
+                child: Text(
+                  emoji,
+                  style: const TextStyle(fontSize: 24),
+                ),
+              ),
+            );
+          }).toList(),
+        ),
       ),
     );
   }

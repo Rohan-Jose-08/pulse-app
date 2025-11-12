@@ -706,6 +706,7 @@ router.get('/conversations-pulse', authenticateUser, async (req, res) => {
 	router.get('/pulse-conversations', authenticateUser, async (req, res) => {
 		try {
 			const me = req.user.id as string;
+			console.log(`📋 GET /pulse-conversations for user ${me}`);
 
 			// 1) Get pulses the user participates in OR authored by the user
 			const myPulses = await prisma.pulse.findMany({
@@ -719,8 +720,9 @@ router.get('/conversations-pulse', authenticateUser, async (req, res) => {
 				take: 200,
 			});
 			const pulseIds = myPulses.map(p => p.id);
+			console.log(`  Found ${myPulses.length} pulses for user:`, pulseIds);
 
-			// 2) Fetch existing PulseConversations for these pulses
+			// 2) Fetch existing PulseConversations for these pulses (only from pulseConversation table)
 			let convos: any[] = [];
 			if (pulseIds.length) {
 				convos = await (prisma as any).pulseConversation.findMany({
@@ -730,25 +732,12 @@ router.get('/conversations-pulse', authenticateUser, async (req, res) => {
 						pulse: { select: { id: true, title: true, imageUrl: true } },
 					},
 				});
-			}
-
-			// 2b) ALSO fetch regular Conversations with pulseId (for unified conversation support)
-			if (pulseIds.length) {
-				const regularPulseConvos = await prisma.conversation.findMany({
-					where: { 
-						pulseId: { in: pulseIds },
-						participants: { some: { id: me } }
-					},
-					include: {
-						participants: { select: { id: true, displayName: true, profileImageUrl: true } },
-						pulse: { select: { id: true, title: true, imageUrl: true } },
-					},
-				});
-				convos.push(...regularPulseConvos);
+				console.log(`  Found ${convos.length} PulseConversations (only returning from pulseConversation table)`);
 			}
 
 			const byPulseId = new Map<string, any>(convos.map((c: any) => [c.pulseId, c]));
 			const toEnsureCreate = pulseIds.filter(pid => !byPulseId.has(pid));
+			console.log(`  Need to create conversations for ${toEnsureCreate.length} pulses:`, toEnsureCreate);
 
 			// 3) Create missing conversations for pulses
 			for (const pid of toEnsureCreate) {
@@ -811,6 +800,9 @@ router.get('/conversations-pulse', authenticateUser, async (req, res) => {
 				const tb = new Date(b.updatedAt || b.createdAt).getTime();
 				return tb - ta;
 			});
+
+			console.log(`  ✅ Returning ${convos.length} pulse conversations`);
+			console.log(`  Conversation IDs:`, convos.map(c => ({ id: c.id, pulseId: c.pulseId, hasMessages: !!c.lastMessageText })));
 
 			res.json(
 				convos.map((c: any) => ({
@@ -1096,13 +1088,25 @@ router.get('/conversations-pulse', authenticateUser, async (req, res) => {
 				avatarUrl?: string;
 			};
 
-			const convo = await (prisma as any).groupConversation.findUnique({
+			// Try to find as group conversation first
+			let convo = await (prisma as any).groupConversation.findUnique({
 				where: { id },
 				include: { participants: true }
 			});
 
+			let isPulseConvo = false;
+			
+			// If not found, try pulse conversation
 			if (!convo) {
-				return res.status(404).json({ error: 'Group conversation not found' });
+				convo = await (prisma as any).pulseConversation.findUnique({
+					where: { id },
+					include: { participants: true, pulse: true }
+				});
+				isPulseConvo = true;
+			}
+
+			if (!convo) {
+				return res.status(404).json({ error: 'Conversation not found' });
 			}
 
 			const isParticipant = convo.participants.some((p: any) => p.id === me);
@@ -1121,16 +1125,26 @@ router.get('/conversations-pulse', authenticateUser, async (req, res) => {
 				updateData.avatarUrl = avatarUrl || null;
 			}
 
-			const updated = await (prisma as any).groupConversation.update({
-				where: { id },
-				data: updateData,
-				include: {
-					participants: { select: { id: true, displayName: true, profileImageUrl: true } },
-					creator: { select: { id: true, displayName: true } }
-				}
-			});
+			// Update the appropriate conversation type
+			const updated = isPulseConvo
+				? await (prisma as any).pulseConversation.update({
+					where: { id },
+					data: updateData,
+					include: {
+						participants: { select: { id: true, displayName: true, profileImageUrl: true } },
+						pulse: { select: { id: true, title: true, imageUrl: true } }
+					}
+				})
+				: await (prisma as any).groupConversation.update({
+					where: { id },
+					data: updateData,
+					include: {
+						participants: { select: { id: true, displayName: true, profileImageUrl: true } },
+						creator: { select: { id: true, displayName: true } }
+					}
+				});
 
-			// Also update legacy conversation
+			// Also update legacy conversation if it exists
 			try {
 				await (prisma as any).conversation.update({
 					where: { id },
@@ -1148,15 +1162,15 @@ router.get('/conversations-pulse', authenticateUser, async (req, res) => {
 				name: updated.name,
 				description: updated.description,
 				avatarUrl: updated.avatarUrl,
-				creatorId: updated.creatorId,
-				creator: updated.creator,
+				creatorId: updated.creatorId || null,
+				creator: updated.creator || null,
 				participants: updated.participants,
 				createdAt: updated.createdAt,
 				updatedAt: updated.updatedAt,
-				lastMessageText: updated.lastMessageText,
-				lastSenderId: updated.lastSenderId,
+				lastMessageText: updated.lastMessageText || null,
+				lastSenderId: updated.lastSenderId || null,
 				isGroup: true,
-				type: 'group',
+				type: isPulseConvo ? 'pulse' : 'group',
 			};
 
 			res.json(mapped);
@@ -1755,6 +1769,113 @@ router.get('/conversations-pulse', authenticateUser, async (req, res) => {
 			res.status(500).json({ error: 'Internal server error' });
 		}
 	});
+
+	// Search messages in a conversation
+	router.get('/conversations/:id/search', authenticateUser, async (req, res) => {
+		try {
+			const me = req.user.id as string;
+			const { id } = req.params;
+			const { q, limit = 50 } = req.query;
+
+			if (!q || typeof q !== 'string' || q.trim().length === 0) {
+				return res.status(400).json({ error: 'Query parameter "q" is required' });
+			}
+
+			const searchQuery = q.trim();
+			const maxLimit = Math.min(parseInt(limit as string) || 50, 100);
+
+			// Check if user is participant in this conversation
+			// Try all conversation types
+			let isParticipant = false;
+			
+			// Check direct conversation
+			const directConvo = await (prisma as any).directConversation.findUnique({
+				where: { id },
+				include: { participants: true }
+			});
+			if (directConvo) {
+				isParticipant = directConvo.participants.some((p: any) => p.id === me);
+			}
+
+			// Check pulse conversation
+			if (!isParticipant) {
+				const pulseConvo = await (prisma as any).pulseConversation.findUnique({
+					where: { id },
+					include: { participants: true }
+				});
+				if (pulseConvo) {
+					isParticipant = pulseConvo.participants.some((p: any) => p.id === me);
+				}
+			}
+
+			// Check group conversation
+			if (!isParticipant) {
+				const groupConvo = await (prisma as any).groupConversation.findUnique({
+					where: { id },
+					include: { participants: true }
+				});
+				if (groupConvo) {
+					isParticipant = groupConvo.participants.some((p: any) => p.id === me);
+				}
+			}
+
+			// Check legacy conversation
+			if (!isParticipant) {
+				const legacyConvo = await prisma.conversation.findUnique({
+					where: { id },
+					include: { participants: true }
+				});
+				if (legacyConvo) {
+					isParticipant = legacyConvo.participants.some((p: any) => p.id === me);
+				}
+			}
+
+			if (!isParticipant) {
+				return res.status(403).json({ error: 'Forbidden' });
+			}
+
+			// Search messages
+			const messages = await prisma.message.findMany({
+				where: {
+					conversationId: id,
+					text: {
+						contains: searchQuery,
+						mode: 'insensitive'
+					}
+				},
+				orderBy: { createdAt: 'desc' },
+				take: maxLimit,
+				include: {
+					sender: {
+						select: {
+							id: true,
+							displayName: true,
+							profileImageUrl: true
+						}
+					}
+				}
+			});
+
+			const results = messages.map(msg => ({
+				id: msg.id,
+				text: msg.text,
+				senderId: msg.senderId,
+				sender: msg.sender,
+				createdAt: msg.createdAt,
+				imageUrl: msg.imageUrl,
+				videoUrl: msg.videoUrl,
+				repliedToId: msg.repliedToId
+			}));
+
+			res.json({ results, count: results.length });
+		} catch (e) {
+			console.error('search messages error', e);
+			res.status(500).json({ error: 'Internal server error' });
+		}
+	});
+
+
+
 
 
 

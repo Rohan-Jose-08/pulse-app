@@ -13,6 +13,7 @@ import 'package:image_picker/image_picker.dart';
 import '../../auth/firebase_auth/auth_util.dart';
 import '../../backend/api_service.dart';
 import '../../backend/socket_service.dart';
+import '../../backend/chat_transport.dart';
 import '../../flutter_flow/flutter_flow_theme.dart';
 import '../../components/skeleton_loader.dart';
 import '../../components/error_state_widget.dart';
@@ -93,6 +94,9 @@ class _GroupChatPageState extends ConsumerState<GroupChatPage>
   StreamSubscription<Map<String, dynamic>>? _gcStatusSub;
   late String _chatId;
 
+  // Bluetooth transport mode
+  ChatTransportMode _transportMode = ChatTransportMode.network;
+
   // Member index for quick lookups
   late final Map<String, Map<String, dynamic>> _memberIndex = {
     for (final m in (widget.members ?? []))
@@ -114,9 +118,18 @@ class _GroupChatPageState extends ConsumerState<GroupChatPage>
     });
 
     try {
-      // Connect socket
-      await SocketService.instance.connect();
-      SocketService.instance.joinConversation(_chatId);
+      // Initialize transport manager
+      _transportMode = ChatTransportManager.instance.mode;
+      await ChatTransportManager.instance.ensureConnected();
+
+      // Connect socket for network mode
+      if (_transportMode == ChatTransportMode.network) {
+        await SocketService.instance.connect();
+        SocketService.instance.joinConversation(_chatId);
+      } else {
+        // For Bluetooth mode, join via transport manager
+        ChatTransportManager.instance.active.joinConversation(_chatId);
+      }
 
       // Load messages
       await _bootstrap();
@@ -146,122 +159,133 @@ class _GroupChatPageState extends ConsumerState<GroupChatPage>
   }
 
   void _setupSocketListeners() {
-    _msgSub = SocketService.instance.messages.listen(_onSocketMessage);
-    _typingSub = SocketService.instance.typing.listen(_onTyping);
-    _ackSub = SocketService.instance.acks.listen((ack) {
-      try {
-        final cid = (ack['conversationId'] ?? ack['id'])?.toString();
-        if (cid != null && cid.isNotEmpty && cid != _chatId) {
-          setState(() => _chatId = cid);
-          SocketService.instance.joinConversation(_chatId);
-        }
-      } catch (_) {}
-    });
+    // Use ChatTransportManager for messages and typing
+    final transport = ChatTransportManager.instance.active;
 
-    // Group call event listeners
-    _gcStartedSub = SocketService.instance.groupCallStarted.listen((m) async {
-      try {
-        if (m['conversationId']?.toString() != _chatId) return;
-        final isVideo = m['isVideo'] == true;
+    _msgSub = transport.messages.listen(_onSocketMessage);
+    _typingSub = transport.typing.listen(_onTyping);
 
-        if (mounted) {
-          setState(() {
-            _isCallActive = true;
-            _isCallVideo = isVideo;
-            _callParticipantCount = 0;
-            _callParticipants = [];
-          });
-          await HapticUtils.light();
-        }
-      } catch (_) {}
-    });
+    // For network mode, also listen to socket acks
+    if (_transportMode == ChatTransportMode.network) {
+      _ackSub = SocketService.instance.acks.listen((ack) {
+        try {
+          final cid = (ack['conversationId'] ?? ack['id'])?.toString();
+          if (cid != null && cid.isNotEmpty && cid != _chatId) {
+            setState(() => _chatId = cid);
+            SocketService.instance.joinConversation(_chatId);
+          }
+        } catch (_) {}
+      });
+    }
 
-    _gcStoppedSub = SocketService.instance.groupCallStopped.listen((m) async {
-      try {
-        if (m['conversationId']?.toString() != _chatId) return;
+    // Group call event listeners (network mode only)
+    if (_transportMode == ChatTransportMode.network) {
+      _gcStartedSub = SocketService.instance.groupCallStarted.listen((m) async {
+        try {
+          if (m['conversationId']?.toString() != _chatId) return;
+          final isVideo = m['isVideo'] == true;
 
-        if (mounted) {
-          setState(() {
-            _isCallActive = false;
-            _callParticipantCount = 0;
-            _callParticipants = [];
-          });
-        }
-      } catch (_) {}
-    });
+          if (mounted) {
+            setState(() {
+              _isCallActive = true;
+              _isCallVideo = isVideo;
+              _callParticipantCount = 0;
+              _callParticipants = [];
+            });
+            await HapticUtils.light();
+          }
+        } catch (_) {}
+      });
 
-    _gcParticipantsSub =
-        SocketService.instance.groupCallParticipants.listen((m) async {
-      try {
-        if (m['conversationId']?.toString() != _chatId) return;
-        final participants = (m['participants'] as List?)?.cast<String>() ?? [];
+      _gcStoppedSub = SocketService.instance.groupCallStopped.listen((m) async {
+        try {
+          if (m['conversationId']?.toString() != _chatId) return;
 
-        if (mounted) {
-          setState(() {
-            _callParticipants = participants;
-            _callParticipantCount = participants.length;
-            if (participants.isNotEmpty) _isCallActive = true;
-          });
-        }
-      } catch (_) {}
-    });
+          if (mounted) {
+            setState(() {
+              _isCallActive = false;
+              _callParticipantCount = 0;
+              _callParticipants = [];
+            });
+          }
+        } catch (_) {}
+      });
 
-    _gcParticipantJoinedSub =
-        SocketService.instance.groupCallParticipantJoined.listen((m) async {
-      try {
-        if (m['conversationId']?.toString() != _chatId) return;
-        final userId = m['userId']?.toString();
+      _gcParticipantsSub =
+          SocketService.instance.groupCallParticipants.listen((m) async {
+        try {
+          if (m['conversationId']?.toString() != _chatId) return;
+          final participants =
+              (m['participants'] as List?)?.cast<String>() ?? [];
 
-        if (userId != null && mounted) {
-          setState(() {
-            if (!_callParticipants.contains(userId)) {
-              _callParticipants.add(userId);
+          if (mounted) {
+            setState(() {
+              _callParticipants = participants;
+              _callParticipantCount = participants.length;
+              if (participants.isNotEmpty) _isCallActive = true;
+            });
+          }
+        } catch (_) {}
+      });
+
+      _gcParticipantJoinedSub =
+          SocketService.instance.groupCallParticipantJoined.listen((m) async {
+        try {
+          if (m['conversationId']?.toString() != _chatId) return;
+          final userId = m['userId']?.toString();
+
+          if (userId != null && mounted) {
+            setState(() {
+              if (!_callParticipants.contains(userId)) {
+                _callParticipants.add(userId);
+                _callParticipantCount = _callParticipants.length;
+              }
+            });
+          }
+        } catch (_) {}
+      });
+
+      _gcParticipantLeftSub =
+          SocketService.instance.groupCallParticipantLeft.listen((m) async {
+        try {
+          if (m['conversationId']?.toString() != _chatId) return;
+          final userId = m['userId']?.toString();
+
+          if (userId != null && mounted) {
+            setState(() {
+              _callParticipants.remove(userId);
               _callParticipantCount = _callParticipants.length;
-            }
-          });
-        }
-      } catch (_) {}
-    });
+            });
+          }
+        } catch (_) {}
+      });
 
-    _gcParticipantLeftSub =
-        SocketService.instance.groupCallParticipantLeft.listen((m) async {
-      try {
-        if (m['conversationId']?.toString() != _chatId) return;
-        final userId = m['userId']?.toString();
+      _gcStatusSub = SocketService.instance.groupCallStatus.listen((m) async {
+        try {
+          if (m['conversationId']?.toString() != _chatId) return;
+          final isActive = m['isActive'] == true;
+          final isVideo = m['isVideo'] == true;
+          final participants =
+              (m['participants'] as List?)?.cast<String>() ?? [];
 
-        if (userId != null && mounted) {
-          setState(() {
-            _callParticipants.remove(userId);
-            _callParticipantCount = _callParticipants.length;
-          });
-        }
-      } catch (_) {}
-    });
-
-    _gcStatusSub = SocketService.instance.groupCallStatus.listen((m) async {
-      try {
-        if (m['conversationId']?.toString() != _chatId) return;
-        final isActive = m['isActive'] == true;
-        final isVideo = m['isVideo'] == true;
-        final participants = (m['participants'] as List?)?.cast<String>() ?? [];
-
-        if (mounted && isActive) {
-          setState(() {
-            _isCallActive = true;
-            _isCallVideo = isVideo;
-            _callParticipants = participants;
-            _callParticipantCount = participants.length;
-          });
-        }
-      } catch (_) {}
-    });
+          if (mounted && isActive) {
+            setState(() {
+              _isCallActive = true;
+              _isCallVideo = isVideo;
+              _callParticipants = participants;
+              _callParticipantCount = participants.length;
+            });
+          }
+        } catch (_) {}
+      });
+    }
   }
 
   Future<void> _bootstrap() async {
-    final res = await ApiService.instance.listMessages(_chatId);
-    final msgs = (res?['messages'] as List<dynamic>? ?? [])
-        .map((m) => _GroupMsg.fromJson(m as Map<String, dynamic>))
-        .toList();
+    // Use ChatTransportManager for loading initial messages
+    final rawMessages =
+        await ChatTransportManager.instance.initialMessages(_chatId);
+    final msgs = rawMessages.map((m) => _GroupMsg.fromJson(m)).toList();
     setState(() => _messages.addAll(msgs));
     _jumpBottom();
   }
@@ -395,7 +419,10 @@ class _GroupChatPageState extends ConsumerState<GroupChatPage>
     await HapticUtils.medium();
 
     try {
-      SocketService.instance.sendMessage(
+      // Ensure transport is connected
+      await ChatTransportManager.instance.ensureConnected();
+
+      ChatTransportManager.instance.active.sendMessage(
         conversationId: _chatId,
         text: txt,
       );
@@ -425,7 +452,118 @@ class _GroupChatPageState extends ConsumerState<GroupChatPage>
   }
 
   void _setTyping(bool v) {
-    SocketService.instance.setTyping(_chatId, v);
+    ChatTransportManager.instance.active.setTyping(_chatId, v);
+  }
+
+  Future<void> _toggleTransportMode() async {
+    await HapticUtils.selection();
+
+    if (!mounted) return;
+    await showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (context) {
+        final t = FlutterFlowTheme.of(context);
+        return Container(
+          decoration: BoxDecoration(
+            color: t.secondaryBackground,
+            borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
+          ),
+          child: SafeArea(
+            child: Column(mainAxisSize: MainAxisSize.min, children: [
+              const SizedBox(height: 12),
+              Container(
+                width: 40,
+                height: 4,
+                decoration: BoxDecoration(
+                  color: t.secondaryText.withOpacity(.3),
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+              const SizedBox(height: 20),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16),
+                child: Text('Choose Connection Mode',
+                    style:
+                        t.headlineSmall.override(fontWeight: FontWeight.w700)),
+              ),
+              const SizedBox(height: 8),
+              ListTile(
+                leading: Icon(Icons.wifi_rounded, color: t.primary),
+                title: const Text('Network (Wi-Fi / Mobile Data)'),
+                subtitle: const Text('Full-featured with cloud sync'),
+                trailing: _transportMode == ChatTransportMode.network
+                    ? Icon(Icons.check, color: t.primary)
+                    : null,
+                onTap: () async {
+                  Navigator.pop(context);
+                  if (_transportMode != ChatTransportMode.network) {
+                    await _switchTransportMode(ChatTransportMode.network);
+                  }
+                },
+              ),
+              ListTile(
+                leading:
+                    Icon(Icons.bluetooth_rounded, color: Colors.blueAccent),
+                title: const Text('Bluetooth Mesh (Experimental)'),
+                subtitle: const Text('Peer-to-peer local messaging'),
+                trailing: _transportMode == ChatTransportMode.bluetooth
+                    ? const Icon(Icons.check, color: Colors.blueAccent)
+                    : null,
+                onTap: () async {
+                  Navigator.pop(context);
+                  if (_transportMode != ChatTransportMode.bluetooth) {
+                    await _switchTransportMode(ChatTransportMode.bluetooth);
+                  }
+                },
+              ),
+              const SizedBox(height: 4),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+                child: Text(
+                  'Bluetooth mode is experimental – messages are kept locally and broadcast to nearby devices.',
+                  style: t.bodySmall.override(color: t.secondaryText),
+                ),
+              )
+            ]),
+          ),
+        );
+      },
+    );
+  }
+
+  Future<void> _switchTransportMode(ChatTransportMode newMode) async {
+    setState(() => _transportMode = newMode);
+    ChatTransportManager.instance.mode = newMode;
+
+    // Cancel existing subscriptions
+    await _msgSub?.cancel();
+    await _typingSub?.cancel();
+    await _ackSub?.cancel();
+    await _gcStartedSub?.cancel();
+    await _gcStoppedSub?.cancel();
+    await _gcParticipantsSub?.cancel();
+    await _gcParticipantJoinedSub?.cancel();
+    await _gcParticipantLeftSub?.cancel();
+    await _gcStatusSub?.cancel();
+
+    // Reconnect with new transport
+    await ChatTransportManager.instance.ensureConnected();
+
+    // Re-setup listeners with new transport
+    _setupSocketListeners();
+
+    // Join conversation with new transport
+    ChatTransportManager.instance.active.joinConversation(_chatId);
+
+    if (mounted) {
+      CustomSnackbar.showInfo(
+        context,
+        message: newMode == ChatTransportMode.bluetooth
+            ? 'Switched to Bluetooth mode'
+            : 'Switched to Network mode',
+      );
+    }
   }
 
   void _maybeCelebrate() {
@@ -458,7 +596,8 @@ class _GroupChatPageState extends ConsumerState<GroupChatPage>
     // ✨ UX: Haptic feedback on reaction
     await HapticUtils.light();
     _spawnReaction(emoji);
-    SocketService.instance.sendMessage(conversationId: _chatId, text: emoji);
+    ChatTransportManager.instance.active
+        .sendMessage(conversationId: _chatId, text: emoji);
   }
 
   void _openGroupInfo() async {
@@ -563,7 +702,7 @@ class _GroupChatPageState extends ConsumerState<GroupChatPage>
       );
       final url = await uploadTask.ref.getDownloadURL();
 
-      SocketService.instance.sendMessage(
+      ChatTransportManager.instance.active.sendMessage(
         conversationId: _chatId,
         imageUrl: url,
       );
@@ -617,7 +756,7 @@ class _GroupChatPageState extends ConsumerState<GroupChatPage>
       );
       final url = await uploadTask.ref.getDownloadURL();
 
-      SocketService.instance.sendMessage(
+      ChatTransportManager.instance.active.sendMessage(
         conversationId: _chatId,
         videoUrl: url,
       );
@@ -791,6 +930,17 @@ class _GroupChatPageState extends ConsumerState<GroupChatPage>
         ),
       ),
       actions: [
+        // Transport mode toggle (Bluetooth / Network)
+        HapticIconButton(
+          icon: _transportMode == ChatTransportMode.bluetooth
+              ? Icons.bluetooth_rounded
+              : Icons.wifi_rounded,
+          onPressed: _toggleTransportMode,
+          color: _transportMode == ChatTransportMode.bluetooth
+              ? Colors.blueAccent
+              : theme.primary,
+          feedbackType: HapticsType.selection,
+        ),
         // Voice call button
         HapticIconButton(
           icon: Icons.call_rounded,
@@ -873,8 +1023,7 @@ class _GroupChatPageState extends ConsumerState<GroupChatPage>
         // Main content
         Column(
           children: [
-            // Quick reactions bar
-            _quickReactions(theme),
+            // Quick reactions bar removed
 
             // Call status bar (Discord-style)
             if (_isCallActive) _callStatusBar(theme),
@@ -912,8 +1061,7 @@ class _GroupChatPageState extends ConsumerState<GroupChatPage>
           ),
         ),
 
-        // Reaction input overlay
-        if (_reactingToMessageId != null) _emojiReactionOverlay(theme),
+        // Reaction input overlay removed
       ],
     );
   }
@@ -953,10 +1101,7 @@ class _GroupChatPageState extends ConsumerState<GroupChatPage>
 
     return GestureDetector(
       onDoubleTap: () => _quickReaction('❤️'),
-      onLongPress: () {
-        HapticUtils.medium();
-        _startReactionInput(m);
-      },
+      // Long press reaction removed
       child: Container(
         margin: EdgeInsets.only(
           top: header ? 10 : 3,
@@ -1125,14 +1270,10 @@ class _GroupChatPageState extends ConsumerState<GroupChatPage>
                 children: [
                   for (final entry in m.reactions.entries)
                     _reactionChip(t, m, entry.key, entry.value),
-                  _addReactionChip(t, m),
+                  // Add reaction chip removed
                 ],
               ),
-            if (m.reactions.isEmpty)
-              Padding(
-                padding: const EdgeInsets.only(top: 8),
-                child: _addReactionChip(t, m),
-              ),
+            // Add reaction chip removed for empty reactions
           ],
         ),
       ),

@@ -2,6 +2,12 @@ import { Router, Request, Response } from 'express';
 import { PrismaClient } from '@prisma/client';
 import { getAuth } from 'firebase-admin/auth';
 import { boundingBox, haversineKm } from '../services/geolocation';
+import {
+  getPersonalizedRecommendations,
+  trackPulseInteraction,
+  markRecommendationViewed,
+  markRecommendationClicked,
+} from '../services/recommendation';
 
 const router = Router();
 const prisma = new PrismaClient();
@@ -217,6 +223,155 @@ router.get('/:id/participants', async (req: Request, res: Response) => {
   } catch (error) {
     console.error('Error fetching pulse participants:', error);
     res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// ============================================================================
+// ML RECOMMENDATION ENDPOINTS
+// ============================================================================
+
+// GET /api/pulses/personalized - Get ML-powered personalized recommendations
+router.get('/personalized', async (req: Request, res: Response) => {
+  try {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+
+    const token = authHeader.split('Bearer ')[1];
+    const decodedToken = await getAuth().verifyIdToken(token);
+    const firebaseUid = decodedToken.uid;
+
+    const user = await prisma.user.findUnique({
+      where: { firebaseUid },
+    });
+
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    const { latitude, longitude } = req.query as { latitude?: string; longitude?: string };
+    const lat = latitude ? parseFloat(latitude) : undefined;
+    const lng = longitude ? parseFloat(longitude) : undefined;
+
+    console.log(`Getting personalized recommendations for user ${user.id}`);
+
+    // Get ML recommendations
+    const recommendations = await getPersonalizedRecommendations(
+      user.id,
+      lat,
+      lng
+    );
+
+    // Enrich with full pulse data
+    const pulseIds = recommendations.map(r => r.pulseId);
+    const pulses = await prisma.pulse.findMany({
+      where: {
+        id: { in: pulseIds },
+        activeUntil: { gte: new Date() },
+      },
+      include: {
+        author: {
+          select: {
+            id: true,
+            displayName: true,
+            profileImageUrl: true,
+            email: true,
+          },
+        },
+        location: {
+          select: {
+            id: true,
+            name: true,
+            city: true,
+            state: true,
+            country: true,
+            latitude: true,
+            longitude: true,
+          },
+        },
+        participants: {
+          select: {
+            id: true,
+            displayName: true,
+            profileImageUrl: true,
+          },
+        },
+      },
+    });
+
+    // Add recommendation metadata
+    const enriched = pulses.map(pulse => {
+      const rec = recommendations.find(r => r.pulseId === pulse.id);
+      return {
+        ...pulse,
+        recommendationScore: rec?.score,
+        recommendationReason: rec?.reason,
+        participantCount: pulse.participants?.length || 0,
+      };
+    });
+
+    // Sort by recommendation score
+    enriched.sort((a, b) => (b.recommendationScore || 0) - (a.recommendationScore || 0));
+
+    // Track that recommendations were viewed
+    if (enriched.length > 0) {
+      await markRecommendationViewed(user.id, enriched.map(p => p.id));
+    }
+
+    res.json({
+      recommendations: enriched,
+      count: enriched.length,
+    });
+  } catch (error) {
+    console.error('Personalized pulses error:', error);
+    res.status(500).json({ error: 'Failed to get recommendations' });
+  }
+});
+
+// POST /api/pulses/track-interaction - Track user interaction with a pulse
+router.post('/track-interaction', async (req: Request, res: Response) => {
+  try {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+
+    const token = authHeader.split('Bearer ')[1];
+    const decodedToken = await getAuth().verifyIdToken(token);
+    const firebaseUid = decodedToken.uid;
+
+    const user = await prisma.user.findUnique({
+      where: { firebaseUid },
+    });
+
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    const { pulseId, interactionType, duration, source } = req.body;
+
+    if (!pulseId || !interactionType) {
+      return res.status(400).json({ error: 'pulseId and interactionType are required' });
+    }
+
+    await trackPulseInteraction(
+      user.id,
+      pulseId,
+      interactionType,
+      duration,
+      source
+    );
+
+    // If it's a recommendation click, mark it
+    if (interactionType === 'recommendation_click') {
+      await markRecommendationClicked(user.id, pulseId);
+    }
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Error tracking interaction:', error);
+    res.status(500).json({ error: 'Failed to track interaction' });
   }
 });
 

@@ -240,16 +240,10 @@ final _pulseConversationsProvider = StreamProvider.autoDispose
     print(
         '[PulseChats] After isPulseGroup filter: ${pulseGroupList.map((c) => c['id']).toList()}');
 
-    // Filter out conversations with no messages (empty auto-created pulse chats)
-    final withMessages = pulseGroupList.where((c) {
-      final lastMessage = c['lastMessageText']?.toString();
-      return lastMessage != null && lastMessage.isNotEmpty;
-    }).toList();
-
-    // Deduplicate by conversation ID
+    // Deduplicate by conversation ID (keep all chats, even without messages)
     final seenIds = <String>{};
     final duplicates = <String>[];
-    items = withMessages.where((c) {
+    items = pulseGroupList.where((c) {
       final id = c['id']?.toString();
       if (id == null || id.isEmpty) return false;
       if (seenIds.contains(id)) {
@@ -268,16 +262,6 @@ final _pulseConversationsProvider = StreamProvider.autoDispose
       print(
           '[PulseChats] ⚠️ REMOVED ${duplicates.length} duplicates: $duplicates');
     }
-    if (items.isEmpty && (list?.isNotEmpty ?? false)) {
-      final withPulseField =
-          (list ?? []).where((c) => c['pulseId'] != null).take(3).toList();
-      // ignore: avoid_print
-      print('[PulseChats] first3WithPulseId=' + withPulseField.toString());
-      if (withPulseField.isEmpty) {
-        // ignore: avoid_print
-        print('[PulseChats] No pulseId present in any conversation objects.');
-      }
-    }
     controller.add(items);
   })();
 
@@ -285,15 +269,9 @@ final _pulseConversationsProvider = StreamProvider.autoDispose
     final list = await ApiService.instance.listPulseConversations();
     final pulseGroupList = (list ?? []).where(isPulseGroup).toList();
 
-    // Filter out conversations with no messages (empty auto-created pulse chats)
-    final withMessages = pulseGroupList.where((c) {
-      final lastMessage = c['lastMessageText']?.toString();
-      return lastMessage != null && lastMessage.isNotEmpty;
-    }).toList();
-
-    // Deduplicate by conversation ID
+    // Deduplicate by conversation ID (keep all chats, even without messages)
     final seenIds = <String>{};
-    items = withMessages.where((c) {
+    items = pulseGroupList.where((c) {
       final id = c['id']?.toString();
       if (id == null || id.isEmpty) return false;
       if (seenIds.contains(id)) return false;
@@ -522,6 +500,7 @@ class _MessagesHubWidgetState extends State<MessagesHubWidget> {
     final lastMessage = (data['lastMessageText'] as String?) ?? '';
     final updatedAt = DateTime.tryParse(data['updatedAt']?.toString() ?? '');
     final pulseId = data['pulseId']?.toString() ?? '';
+    final avatarUrl = data['avatarUrl']?.toString();
 
     // Get participant count
     final List<dynamic> participants =
@@ -541,11 +520,16 @@ class _MessagesHubWidgetState extends State<MessagesHubWidget> {
           children: [
             CircleAvatar(
               backgroundColor: theme.primary.withOpacity(0.1),
-              child: Icon(
-                Icons.group_rounded,
-                color: theme.primary,
-                size: 24,
-              ),
+              backgroundImage: avatarUrl != null && avatarUrl.isNotEmpty
+                  ? NetworkImage(avatarUrl)
+                  : null,
+              child: avatarUrl == null || avatarUrl.isEmpty
+                  ? Icon(
+                      Icons.group_rounded,
+                      color: theme.primary,
+                      size: 24,
+                    )
+                  : null,
             ),
             // Ongoing call indicator (non-intrusive)
             if (_activeCalls.contains(data['id']?.toString()))
