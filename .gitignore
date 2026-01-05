@@ -18,3 +18,4 @@ backend/node_modules/
 *.pdf
 pulse\android\app\google-services.json
 pulse\ios\Runner\AppDelegate.swift
+backend\firebase-admin-key.json
