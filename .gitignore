@@ -13,3 +13,8 @@ pulse/.dart_tool/
 # Node
 backend/generated/
 backend/node_modules/
+*.md 
+*.html
+*.pdf
+pulse\android\app\google-services.json
+pulse\ios\Runner\AppDelegate.swift

@@ -16,6 +16,7 @@ import admin from './firebase';
 import http from 'http';
 import { userSockets, getIo, setIo, setUserOnline, setUserOffline, getUserActivity, getOnlineUsers } from './realtime';
 import { authenticateUser } from './middleware/auth';
+import { createRateLimiter } from './middleware/rateLimit';
 // Geolocation service (coordinate + reverse geocode utilities)
 import { haversineKm, reverseGeocode } from './services/geolocation';
 import { placesAutocomplete, placeDetails, parseLocationFromPlace } from './services/googlePlaces';
@@ -42,7 +43,13 @@ declare global {
 }
 
 // Mount the auth routes directly without applying global authentication middleware
-app.use('/api/auth', authRoute);
+const authLimiter = createRateLimiter({
+  windowMs: 60_000,
+  max: 20,
+  message: 'Too many auth attempts; please retry shortly',
+  keyGenerator: (req) => `${req.ip}:auth`,
+});
+app.use('/api/auth', authLimiter, authRoute);
 
 // Mount the profile routes
 app.use('/api/profile', profileRoute);
@@ -188,7 +195,13 @@ app.get('/api/health', async (req, res) => {
 
 // Google Places autocomplete proxy (rate limit & API key protection handled server-side)
 // GET /api/places/autocomplete?input=...&sessionToken=optional
-app.get('/api/places/autocomplete', async (req, res) => {
+const placesLimiter = createRateLimiter({
+  windowMs: 60_000,
+  max: 60,
+  message: 'Too many Places requests; please retry shortly',
+  keyGenerator: (req) => `${req.ip}:places`,
+});
+app.get('/api/places/autocomplete', placesLimiter, async (req, res) => {
   try {
     const { input, sessionToken, language } = req.query as any;
     if (!input || !String(input).trim()) return res.json([]);
@@ -202,7 +215,7 @@ app.get('/api/places/autocomplete', async (req, res) => {
 
 // Google Places details -> structured Location preview (not persisted)
 // GET /api/places/:placeId
-app.get('/api/places/details/:placeId', async (req, res) => {
+app.get('/api/places/details/:placeId', placesLimiter, async (req, res) => {
   try {
     const { placeId } = req.params;
     if (!placeId) return res.status(400).json({ error: 'placeId required' });
