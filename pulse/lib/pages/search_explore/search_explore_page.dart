@@ -10,6 +10,7 @@ import '../search/search_widget.dart';
 import '../profile/ProfilePage.dart';
 import '../../backend/api_service.dart';
 import '../../auth/firebase_auth/auth_util.dart';
+import 'recommendations_tab.dart';
 
 class SearchExplorePage extends ConsumerStatefulWidget {
   const SearchExplorePage({super.key});
@@ -21,15 +22,18 @@ class SearchExplorePage extends ConsumerStatefulWidget {
   ConsumerState<SearchExplorePage> createState() => _SearchExplorePageState();
 }
 
-class _SearchExplorePageState extends ConsumerState<SearchExplorePage> {
+class _SearchExplorePageState extends ConsumerState<SearchExplorePage>
+    with SingleTickerProviderStateMixin {
   final TextEditingController _controller = TextEditingController();
   final FocusNode _focusNode = FocusNode();
   final ScrollController _scrollController = ScrollController();
+  late TabController _tabController;
 
   @override
   void initState() {
     super.initState();
     _scrollController.addListener(_onScroll);
+    _tabController = TabController(length: 2, vsync: this);
   }
 
   void _onScroll() {
@@ -45,6 +49,7 @@ class _SearchExplorePageState extends ConsumerState<SearchExplorePage> {
     _controller.dispose();
     _focusNode.dispose();
     _scrollController.dispose();
+    _tabController.dispose();
     super.dispose();
   }
 
@@ -72,7 +77,25 @@ class _SearchExplorePageState extends ConsumerState<SearchExplorePage> {
               )
             : null,
         centerTitle: true,
-        title: _buildSearchBar(context, theme),
+        bottom: hasQuery
+            ? null
+            : TabBar(
+                controller: _tabController,
+                labelColor: theme.primary,
+                unselectedLabelColor: theme.secondaryText,
+                indicatorColor: theme.primary,
+                indicatorWeight: 3,
+                tabs: const [
+                  Tab(
+                    icon: Icon(Icons.auto_awesome),
+                    text: 'For You',
+                  ),
+                  Tab(
+                    icon: Icon(Icons.explore),
+                    text: 'Explore',
+                  ),
+                ],
+              ),
       ),
       body: GestureDetector(
         onTap: () => FocusScope.of(context).unfocus(),
@@ -92,11 +115,16 @@ class _SearchExplorePageState extends ConsumerState<SearchExplorePage> {
                 error: (_, __) =>
                     const Center(child: Text('Error loading results')),
               )
-            : RefreshIndicator(
-                onRefresh: () async => pagination.refresh(),
-                color: theme.primary,
-                backgroundColor: theme.secondaryBackground,
-                child: CustomScrollView(
+            : TabBarView(
+                controller: _tabController,
+                children: [
+                  const RecommendationsTab(),
+                  RefreshIndicator(
+                    onRefresh: () async => pagination.refresh(),
+                    color: theme.primary,
+                    backgroundColor: theme.secondaryBackground,
+                    child: CustomScrollView(
+                    child: CustomScrollView(
                   controller: _scrollController,
                   physics: const BouncingScrollPhysics(
                       parent: AlwaysScrollableScrollPhysics()),
@@ -114,9 +142,11 @@ class _SearchExplorePageState extends ConsumerState<SearchExplorePage> {
                               _focusNode.unfocus();
                             },
                           ),
-                          loading: () => const SizedBox(height: 0),
-                          error: (_, __) => const SizedBox(height: 0),
-                        ),
+                      const SliverToBoxAdapter(child: SizedBox(height: 100)),
+                    ],
+                  ),
+                ),
+                ]       ),
                         loading: () => const SizedBox(height: 0),
                         error: (_, __) => const SizedBox(height: 0),
                       ),

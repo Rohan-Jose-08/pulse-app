@@ -27,10 +27,13 @@ export interface RecommendationResult {
   pulseId: string;
   score: number;
   reason: string;
+  category?: string;
+  distance?: number;
 }
 
 /**
  * Get personalized pulse recommendations for a user
+ * Uses ML service with collaborative filtering, neural networks, and ensemble scoring
  */
 export async function getPersonalizedRecommendations(
   userId: string,
@@ -58,17 +61,25 @@ export async function getPersonalizedRecommendations(
       return [];
     }
 
-    // Try to get ML recommendations
+    // Try to get ML recommendations with enhanced features
     let recommendations: RecommendationResult[];
     try {
+      const requestBody: any = {
+        userId,
+        userFeatures,
+        availablePulses,
+        maxResults: 30,
+      };
+
+      // Add user location if available
+      if (latitude !== undefined && longitude !== undefined) {
+        requestBody.userLocation = { latitude, longitude };
+      }
+
       const response = await axios.post(
         `${ML_SERVICE_URL}/recommend`,
-        {
-          userId,
-          userFeatures,
-          availablePulses,
-        },
-        { timeout: 5000 } // 5 second timeout
+        requestBody,
+        { timeout: 8000 } // 8 second timeout for enhanced ML
       );
       recommendations = response.data;
       console.log(`ML service returned ${recommendations.length} recommendations`);
@@ -526,4 +537,135 @@ function haversineDistance(
 
 function toRad(degrees: number): number {
   return degrees * (Math.PI / 180);
+}
+
+// ============================================================================
+// ADVANCED ML SERVICE INTEGRATION
+// ============================================================================
+
+/**
+ * Train ML models with recent interaction data
+ */
+export async function trainMLModels(
+  model: 'all' | 'collaborative' | 'neural' = 'all',
+  days: number = 30
+): Promise<{ success: boolean; message: string; modelsTrainedCount?: number }> {
+  try {
+    const response = await axios.post(
+      `${ML_SERVICE_URL}/train`,
+      { model, days, force: false },
+      { timeout: 60000 } // 60 second timeout for training
+    );
+    
+    return {
+      success: true,
+      message: `Training completed: ${response.data.models_trained?.join(', ') || 'unknown'}`,
+      modelsTrainedCount: response.data.models_trained?.length || 0,
+    };
+  } catch (error) {
+    console.error('Error training ML models:', error);
+    return {
+      success: false,
+      message: 'Failed to train ML models',
+    };
+  }
+}
+
+/**
+ * Get similar users for a given user (collaborative filtering)
+ */
+export async function getSimilarUsers(
+  userId: string,
+  limit: number = 10
+): Promise<Array<{ userId: string; similarity: number }>> {
+  try {
+    const response = await axios.get(
+      `${ML_SERVICE_URL}/similar-users/${userId}?limit=${limit}`,
+      { timeout: 5000 }
+    );
+    
+    return response.data.similarUsers || [];
+  } catch (error) {
+    console.error('Error getting similar users:', error);
+    return [];
+  }
+}
+
+/**
+ * Get explanation for why a pulse was recommended
+ */
+export async function explainRecommendation(
+  userId: string,
+  pulseId: string
+): Promise<any> {
+  try {
+    const response = await axios.get(
+      `${ML_SERVICE_URL}/explain/${userId}/${pulseId}`,
+      { timeout: 5000 }
+    );
+    
+    return response.data;
+  } catch (error) {
+    console.error('Error explaining recommendation:', error);
+    return null;
+  }
+}
+
+/**
+ * Get ML model statistics
+ */
+export async function getMLModelStats(): Promise<any> {
+  try {
+    const response = await axios.get(
+      `${ML_SERVICE_URL}/model-stats`,
+      { timeout: 5000 }
+    );
+    
+    return response.data;
+  } catch (error) {
+    console.error('Error getting ML model stats:', error);
+    return null;
+  }
+}
+
+/**
+ * Create or update an A/B test experiment
+ */
+export async function createABTest(
+  name: string,
+  variants: Array<{ name: string; weights: Record<string, number> }>
+): Promise<boolean> {
+  try {
+    await axios.post(
+      `${ML_SERVICE_URL}/ab-test`,
+      { name, variants },
+      { timeout: 5000 }
+    );
+    
+    return true;
+  } catch (error) {
+    console.error('Error creating A/B test:', error);
+    return false;
+  }
+}
+
+/**
+ * Batch generate recommendations for multiple users
+ */
+export async function batchRecommendations(
+  userIds: string[],
+  maxResults: number = 10
+): Promise<Record<string, RecommendationResult[]>> {
+  try {
+    const response = await axios.post(
+      `${ML_SERVICE_URL}/batch-recommend`,
+      { userIds, maxResults },
+      { timeout: 30000 } // 30 second timeout for batch
+    );
+    
+    return response.data.recommendations || {};
+  } catch (error) {
+    console.error('Error getting batch recommendations:', error);
+    return {};
+  }
 }

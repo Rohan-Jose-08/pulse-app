@@ -2,13 +2,19 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 import numpy as np
 from datetime import datetime, timedelta
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 import logging
 import os
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, text
 from sqlalchemy.pool import NullPool
 import json
+from collections import defaultdict
+import hashlib
+import pickle
+from functools import lru_cache
+import threading
+import time
 
 # Load environment variables
 load_dotenv()
@@ -210,14 +216,18 @@ class DatabaseService:
             return False
         
         try:
+            import uuid
+            interaction_id = 'c' + uuid.uuid4().hex[:24]
+            
             with self.engine.connect() as conn:
                 conn.execute(
                     text("""
                         INSERT INTO "PulseInteraction" 
-                        ("userId", "pulseId", "interactionType", "duration", "source", "timestamp")
-                        VALUES (:user_id, :pulse_id, :interaction_type, :duration, :source, NOW())
+                        ("id", "userId", "pulseId", "interactionType", "duration", "source", "timestamp")
+                        VALUES (:id, :user_id, :pulse_id, :interaction_type, :duration, :source, NOW())
                     """),
                     {
+                        "id": interaction_id,
                         "user_id": user_id,
                         "pulse_id": pulse_id,
                         "interaction_type": interaction_type,
@@ -239,13 +249,18 @@ class DatabaseService:
         try:
             with self.engine.connect() as conn:
                 for rec in recommendations:
+                    # Generate a unique ID (cuid-like)
+                    import uuid
+                    rec_id = 'c' + uuid.uuid4().hex[:24]
+                    
                     conn.execute(
                         text("""
                             INSERT INTO "PulseRecommendation" 
-                            ("userId", "pulseId", "score", "reason", "generatedAt")
-                            VALUES (:user_id, :pulse_id, :score, :reason, NOW())
+                            ("id", "userId", "pulseId", "score", "reason", "generatedAt")
+                            VALUES (:id, :user_id, :pulse_id, :score, :reason, NOW())
                         """),
                         {
+                            "id": rec_id,
                             "user_id": rec['userId'],
                             "pulse_id": rec['pulseId'],
                             "score": rec['score'],
@@ -278,12 +293,478 @@ class DatabaseService:
 db_service = DatabaseService(engine) if engine else None
 
 
+# ============================================================================
+# ADVANCED ML MODELS
+# ============================================================================
+
+class TFIDFVectorizer:
+    """Simple TF-IDF implementation for text similarity"""
+    
+    def __init__(self):
+        self.vocabulary = {}
+        self.idf_values = {}
+        self.fitted = False
+    
+    def fit(self, documents: List[str]):
+        """Build vocabulary and IDF values from documents"""
+        doc_count = len(documents)
+        term_doc_count = defaultdict(int)
+        
+        # Build vocabulary
+        for doc in documents:
+            terms = set(self._tokenize(doc))
+            for term in terms:
+                term_doc_count[term] += 1
+        
+        # Calculate IDF
+        for idx, (term, count) in enumerate(term_doc_count.items()):
+            self.vocabulary[term] = idx
+            self.idf_values[term] = np.log((doc_count + 1) / (count + 1)) + 1
+        
+        self.fitted = True
+    
+    def transform(self, text: str) -> np.ndarray:
+        """Transform text into TF-IDF vector"""
+        if not self.fitted:
+            return np.array([])
+        
+        vector = np.zeros(len(self.vocabulary))
+        terms = self._tokenize(text)
+        term_counts = defaultdict(int)
+        
+        for term in terms:
+            term_counts[term] += 1
+        
+        for term, count in term_counts.items():
+            if term in self.vocabulary:
+                tf = count / len(terms) if terms else 0
+                idf = self.idf_values.get(term, 1)
+                vector[self.vocabulary[term]] = tf * idf
+        
+        # Normalize
+        norm = np.linalg.norm(vector)
+        if norm > 0:
+            vector = vector / norm
+        
+        return vector
+    
+    def _tokenize(self, text: str) -> List[str]:
+        """Simple tokenization"""
+        if not text:
+            return []
+        return text.lower().split()
+
+
+class CollaborativeFilter:
+    """
+    Collaborative filtering using user-item interaction matrix
+    Uses cosine similarity between users based on their pulse interactions
+    """
+    
+    def __init__(self):
+        self.user_item_matrix = None
+        self.user_mapping = {}
+        self.item_mapping = {}
+        self.reverse_user_mapping = {}
+        self.reverse_item_mapping = {}
+        self.user_similarity_matrix = None
+        self.last_update = None
+    
+    def fit(self, interactions: List[Dict[str, Any]]):
+        """Build user-item matrix from interactions"""
+        if not interactions:
+            return
+        
+        # Build mappings
+        users = list(set(i['userId'] for i in interactions))
+        items = list(set(i['pulseId'] for i in interactions))
+        
+        self.user_mapping = {u: idx for idx, u in enumerate(users)}
+        self.item_mapping = {i: idx for idx, i in enumerate(items)}
+        self.reverse_user_mapping = {idx: u for u, idx in self.user_mapping.items()}
+        self.reverse_item_mapping = {idx: i for i, idx in self.item_mapping.items()}
+        
+        # Build matrix
+        n_users = len(users)
+        n_items = len(items)
+        self.user_item_matrix = np.zeros((n_users, n_items))
+        
+        # Weight different interaction types
+        interaction_weights = {
+            'join': 5.0,
+            'message': 3.0,
+            'invite': 2.0,
+            'recommendation_click': 1.5,
+            'view': 1.0,
+            'share': 2.5,
+        }
+        
+        for interaction in interactions:
+            user_idx = self.user_mapping.get(interaction['userId'])
+            item_idx = self.item_mapping.get(interaction['pulseId'])
+            if user_idx is not None and item_idx is not None:
+                weight = interaction_weights.get(interaction['interactionType'], 1.0)
+                self.user_item_matrix[user_idx, item_idx] += weight
+        
+        # Calculate user similarity matrix
+        self._compute_user_similarity()
+        self.last_update = datetime.now()
+    
+    def _compute_user_similarity(self):
+        """Compute cosine similarity between all users"""
+        if self.user_item_matrix is None or self.user_item_matrix.shape[0] == 0:
+            return
+        
+        # Normalize rows
+        norms = np.linalg.norm(self.user_item_matrix, axis=1, keepdims=True)
+        norms[norms == 0] = 1
+        normalized = self.user_item_matrix / norms
+        
+        # Compute similarity matrix
+        self.user_similarity_matrix = np.dot(normalized, normalized.T)
+    
+    def get_similar_users(self, user_id: str, top_k: int = 10) -> List[Tuple[str, float]]:
+        """Get top-k similar users"""
+        if user_id not in self.user_mapping or self.user_similarity_matrix is None:
+            return []
+        
+        user_idx = self.user_mapping[user_id]
+        similarities = self.user_similarity_matrix[user_idx]
+        
+        # Get top similar users (excluding self)
+        similar_indices = np.argsort(similarities)[::-1][1:top_k+1]
+        
+        result = []
+        for idx in similar_indices:
+            if similarities[idx] > 0:
+                result.append((self.reverse_user_mapping[idx], float(similarities[idx])))
+        
+        return result
+    
+    def predict_score(self, user_id: str, pulse_id: str) -> float:
+        """Predict user's interest in a pulse based on similar users"""
+        if user_id not in self.user_mapping or self.user_similarity_matrix is None:
+            return 0.5  # Default score
+        
+        if pulse_id not in self.item_mapping:
+            return 0.5
+        
+        user_idx = self.user_mapping[user_id]
+        item_idx = self.item_mapping[pulse_id]
+        
+        # Weighted average of similar users' ratings
+        similarities = self.user_similarity_matrix[user_idx]
+        item_scores = self.user_item_matrix[:, item_idx]
+        
+        # Exclude self
+        mask = np.arange(len(similarities)) != user_idx
+        sim_scores = similarities[mask] * item_scores[mask]
+        
+        if np.sum(similarities[mask]) > 0:
+            score = np.sum(sim_scores) / (np.sum(np.abs(similarities[mask])) + 1e-8)
+            # Normalize to 0-1 range
+            return min(1.0, max(0.0, score / 5.0))
+        
+        return 0.5
+
+
+class NeuralScorer:
+    """
+    Simple neural network for pulse scoring using numpy
+    Features: user features + pulse features -> score prediction
+    """
+    
+    def __init__(self, input_dim: int = 20, hidden_dim: int = 32):
+        self.input_dim = input_dim
+        self.hidden_dim = hidden_dim
+        
+        # Initialize weights with Xavier initialization
+        scale1 = np.sqrt(2.0 / input_dim)
+        scale2 = np.sqrt(2.0 / hidden_dim)
+        
+        self.W1 = np.random.randn(input_dim, hidden_dim) * scale1
+        self.b1 = np.zeros(hidden_dim)
+        self.W2 = np.random.randn(hidden_dim, hidden_dim // 2) * scale2
+        self.b2 = np.zeros(hidden_dim // 2)
+        self.W3 = np.random.randn(hidden_dim // 2, 1) * np.sqrt(2.0 / (hidden_dim // 2))
+        self.b3 = np.zeros(1)
+        
+        self.is_trained = False
+    
+    def _relu(self, x: np.ndarray) -> np.ndarray:
+        return np.maximum(0, x)
+    
+    def _sigmoid(self, x: np.ndarray) -> np.ndarray:
+        return 1 / (1 + np.exp(-np.clip(x, -500, 500)))
+    
+    def predict(self, features: np.ndarray) -> float:
+        """Forward pass to predict score"""
+        h1 = self._relu(np.dot(features, self.W1) + self.b1)
+        h2 = self._relu(np.dot(h1, self.W2) + self.b2)
+        output = self._sigmoid(np.dot(h2, self.W3) + self.b3)
+        return float(output[0])
+    
+    def extract_features(self, user_features: Dict, pulse: Dict) -> np.ndarray:
+        """Extract feature vector from user and pulse data"""
+        features = np.zeros(self.input_dim)
+        
+        # User features (indices 0-9)
+        features[0] = user_features.get('socialActivityScore', 0.5)
+        features[1] = user_features.get('messagingFrequency', 0) / 10.0
+        features[2] = user_features.get('inviteAcceptanceRate', 0.5)
+        features[3] = user_features.get('totalPulsesJoined', 0) / 100.0
+        features[4] = user_features.get('totalPulsesCreated', 0) / 50.0
+        features[5] = len(user_features.get('preferredCategories', [])) / 5.0
+        features[6] = len(user_features.get('preferredTimeSlots', [])) / 4.0
+        features[7] = user_features.get('avgSessionDuration', 60) / 300.0
+        features[8] = user_features.get('avgDistanceKm', 10) / 50.0
+        
+        # Category match
+        pulse_category = pulse.get('category', '').lower()
+        preferred = [c.lower() for c in user_features.get('preferredCategories', [])]
+        features[9] = 1.0 if pulse_category in preferred else 0.0
+        
+        # Pulse features (indices 10-19)
+        features[10] = pulse.get('participantCount', 0) / 20.0
+        features[11] = 1.0 if pulse.get('maxParticipants') else 0.0
+        
+        # Distance feature
+        location = pulse.get('location', {})
+        distance = location.get('distance', 50)
+        features[12] = max(0, 1 - distance / 50.0)
+        
+        # Time features
+        event_time_str = pulse.get('eventTime')
+        if event_time_str:
+            try:
+                event_time = datetime.fromisoformat(str(event_time_str).replace('Z', '+00:00'))
+                now = datetime.now(event_time.tzinfo) if event_time.tzinfo else datetime.now()
+                hours_until = (event_time - now).total_seconds() / 3600
+                
+                # Time urgency (0 to 1, higher for events starting soon)
+                features[13] = max(0, 1 - hours_until / 48.0)
+                
+                # Time slot match
+                hour = event_time.hour
+                if 6 <= hour < 12:
+                    time_slot = 'morning'
+                elif 12 <= hour < 17:
+                    time_slot = 'afternoon'
+                elif 17 <= hour < 21:
+                    time_slot = 'evening'
+                else:
+                    time_slot = 'night'
+                
+                preferred_slots = user_features.get('preferredTimeSlots', [])
+                features[14] = 1.0 if time_slot in preferred_slots else 0.0
+            except:
+                pass
+        
+        # Weekday/weekend
+        try:
+            if event_time_str:
+                event_time = datetime.fromisoformat(str(event_time_str).replace('Z', '+00:00'))
+                features[15] = 1.0 if event_time.weekday() >= 5 else 0.0
+        except:
+            pass
+        
+        return features
+    
+    def train_batch(self, features_batch: List[np.ndarray], labels: List[float], 
+                   learning_rate: float = 0.01):
+        """Simple batch training with gradient descent"""
+        if not features_batch:
+            return
+        
+        for features, label in zip(features_batch, labels):
+            # Forward pass
+            h1 = self._relu(np.dot(features, self.W1) + self.b1)
+            h2 = self._relu(np.dot(h1, self.W2) + self.b2)
+            output = self._sigmoid(np.dot(h2, self.W3) + self.b3)
+            
+            # Compute gradients (simplified backprop)
+            error = output - label
+            
+            # Output layer gradients
+            d3 = error * output * (1 - output)
+            dW3 = np.outer(h2, d3)
+            db3 = d3
+            
+            # Hidden layer 2 gradients
+            d2 = np.dot(d3, self.W3.T) * (h2 > 0)
+            dW2 = np.outer(h1, d2)
+            db2 = d2
+            
+            # Hidden layer 1 gradients
+            d1 = np.dot(d2, self.W2.T) * (h1 > 0)
+            dW1 = np.outer(features, d1)
+            db1 = d1
+            
+            # Update weights
+            self.W3 -= learning_rate * dW3
+            self.b3 -= learning_rate * db3
+            self.W2 -= learning_rate * dW2
+            self.b2 -= learning_rate * db2
+            self.W1 -= learning_rate * dW1
+            self.b1 -= learning_rate * db1
+        
+        self.is_trained = True
+
+
+class ModelEnsemble:
+    """
+    Ensemble model combining multiple scoring approaches
+    Weights can be adjusted via A/B testing
+    """
+    
+    def __init__(self):
+        self.weights = {
+            'content': 0.30,
+            'collaborative': 0.25,
+            'neural': 0.20,
+            'temporal': 0.15,
+            'social': 0.10,
+        }
+    
+    def combine_scores(self, scores: Dict[str, float]) -> float:
+        """Combine multiple scores using weighted average"""
+        total_weight = 0
+        weighted_sum = 0
+        
+        for key, weight in self.weights.items():
+            if key in scores and scores[key] is not None:
+                weighted_sum += scores[key] * weight
+                total_weight += weight
+        
+        if total_weight > 0:
+            return weighted_sum / total_weight
+        return 0.5
+    
+    def set_weights(self, weights: Dict[str, float]):
+        """Update ensemble weights (for A/B testing)"""
+        self.weights.update(weights)
+
+
+class ABTestManager:
+    """
+    A/B Testing manager for recommendation experiments
+    """
+    
+    def __init__(self):
+        self.experiments = {}
+        self.user_assignments = {}
+    
+    def create_experiment(self, name: str, variants: List[Dict[str, Any]]):
+        """Create new A/B test experiment"""
+        self.experiments[name] = {
+            'name': name,
+            'variants': variants,
+            'created_at': datetime.now().isoformat(),
+            'is_active': True
+        }
+    
+    def get_variant(self, user_id: str, experiment_name: str) -> Optional[Dict[str, Any]]:
+        """Get experiment variant for user (consistent assignment)"""
+        if experiment_name not in self.experiments:
+            return None
+        
+        experiment = self.experiments[experiment_name]
+        if not experiment['is_active']:
+            return None
+        
+        key = f"{user_id}:{experiment_name}"
+        if key not in self.user_assignments:
+            # Hash user ID for consistent assignment
+            hash_val = int(hashlib.md5(key.encode()).hexdigest(), 16)
+            variant_idx = hash_val % len(experiment['variants'])
+            self.user_assignments[key] = variant_idx
+        
+        return experiment['variants'][self.user_assignments[key]]
+
+
+# Initialize ML components
+collaborative_filter = CollaborativeFilter()
+neural_scorer = NeuralScorer()
+model_ensemble = ModelEnsemble()
+ab_test_manager = ABTestManager()
+text_vectorizer = TFIDFVectorizer()
+
+# Background model update flag
+model_update_lock = threading.Lock()
+last_model_update = None
+
+
+def update_models_async():
+    """Background task to update ML models periodically"""
+    global last_model_update
+    
+    while True:
+        try:
+            with model_update_lock:
+                if db_service and db_service.engine:
+                    logger.info("Starting background model update...")
+                    
+                    # Get all interactions from last 30 days
+                    interactions = get_all_interactions(days=30)
+                    if interactions:
+                        # Update collaborative filter
+                        collaborative_filter.fit(interactions)
+                        logger.info(f"Collaborative filter updated with {len(interactions)} interactions")
+                    
+                    last_model_update = datetime.now()
+                    logger.info("Background model update completed")
+        except Exception as e:
+            logger.error(f"Error in background model update: {e}")
+        
+        # Update every 30 minutes
+        time.sleep(1800)
+
+
+def get_all_interactions(days: int = 30) -> List[Dict[str, Any]]:
+    """Fetch all interactions from database for model training"""
+    if not db_service or not db_service.engine:
+        return []
+    
+    try:
+        with db_service.engine.connect() as conn:
+            result = conn.execute(
+                text("""
+                    SELECT "userId", "pulseId", "interactionType", "timestamp"
+                    FROM "PulseInteraction"
+                    WHERE "timestamp" > NOW() - INTERVAL ':days days'
+                    ORDER BY "timestamp" DESC
+                    LIMIT 100000
+                """.replace(':days', str(days)))
+            )
+            
+            interactions = []
+            for row in result:
+                interactions.append({
+                    'userId': row[0],
+                    'pulseId': row[1],
+                    'interactionType': row[2],
+                    'timestamp': row[3].isoformat() if row[3] else None
+                })
+            
+            return interactions
+    except Exception as e:
+        logger.error(f"Error fetching all interactions: {e}")
+        return []
+
+
+# Start background model update thread
+model_update_thread = threading.Thread(target=update_models_async, daemon=True)
+# Comment out for now - enable in production
+# model_update_thread.start()
+
+
 class PulseRecommender:
     """
     ML-powered pulse recommendation system
     Uses a hybrid approach combining:
     - Content-based filtering (category, location, time preferences)
     - Collaborative filtering (similar user preferences)
+    - Neural network scoring
     - Contextual features (time of day, distance, social signals)
     """
     
@@ -298,44 +779,75 @@ class PulseRecommender:
             'education': 1.0,
             'business': 1.0,
         }
+        self.use_advanced_ml = True
     
     def calculate_pulse_score(
         self,
         pulse: Dict[str, Any],
         user_features: Dict[str, Any],
-        similar_users: List[str] = []
+        user_id: str = None,
+        use_ensemble: bool = True
     ) -> float:
         """
         Calculate composite recommendation score for a pulse
         Returns score between 0.0 and 1.0
+        
+        Uses ensemble of:
+        - Content-based filtering
+        - Collaborative filtering
+        - Neural network
+        - Temporal & location features
         """
-        score = 0.5  # Base score
+        scores = {}
         
-        # Content-based score (30%)
-        content_score = self._content_based_score(pulse, user_features)
-        score += 0.3 * content_score
+        # Content-based score
+        scores['content'] = self._content_based_score(pulse, user_features)
         
-        # Temporal score (20%)
-        temporal_score = self._temporal_score(pulse, user_features)
-        score += 0.2 * temporal_score
+        # Temporal score
+        scores['temporal'] = self._temporal_score(pulse, user_features)
         
-        # Location score (20%)
+        # Location score
         location_score = self._location_score(pulse, user_features)
-        score += 0.2 * location_score
         
-        # Social score (15%)
-        social_score = self._social_score(pulse, user_features)
-        score += 0.15 * social_score
+        # Social score
+        scores['social'] = self._social_score(pulse, user_features)
         
-        # Popularity score (10%)
+        # Popularity score (included in content)
         popularity_score = self._popularity_score(pulse)
-        score += 0.1 * popularity_score
-        
-        # Recency bonus (5%)
         recency_score = self._recency_score(pulse)
-        score += 0.05 * recency_score
         
-        return min(1.0, max(0.0, score))
+        # Adjust content score with popularity and recency
+        scores['content'] = (scores['content'] * 0.7 + popularity_score * 0.2 + recency_score * 0.1)
+        
+        # Advanced ML scores (if enabled and user_id available)
+        if self.use_advanced_ml and user_id:
+            # Collaborative filtering score
+            cf_score = collaborative_filter.predict_score(user_id, pulse.get('id', ''))
+            if cf_score != 0.5:  # Non-default score means we have data
+                scores['collaborative'] = cf_score
+            
+            # Neural network score
+            try:
+                features = neural_scorer.extract_features(user_features, pulse)
+                scores['neural'] = neural_scorer.predict(features)
+            except Exception as e:
+                logger.debug(f"Neural scoring error: {e}")
+        
+        # Use ensemble or fallback to weighted average
+        if use_ensemble and len(scores) >= 3:
+            # Include location in ensemble scores
+            scores['location'] = location_score
+            final_score = model_ensemble.combine_scores(scores)
+        else:
+            # Fallback: simple weighted average
+            final_score = 0.5  # Base score
+            final_score += 0.30 * scores.get('content', 0.5)
+            final_score += 0.20 * scores.get('temporal', 0.5)
+            final_score += 0.25 * location_score
+            final_score += 0.15 * scores.get('social', 0.5)
+            final_score += 0.10 * scores.get('collaborative', 0.5)
+        
+        return min(1.0, max(0.0, final_score))
     
     def _content_based_score(self, pulse: Dict, user_features: Dict) -> float:
         """Score based on category match and user interests"""
@@ -591,11 +1103,32 @@ recommender = PulseRecommender()
 
 @app.route('/health', methods=['GET'])
 def health():
-    """Health check endpoint"""
+    """Health check endpoint with detailed status"""
+    db_status = 'connected' if (db_service and db_service.engine) else 'disconnected'
+    
     return jsonify({
         'status': 'healthy',
         'service': 'pulse-ml-recommender',
-        'version': '1.0.0'
+        'version': '2.0.0',
+        'features': [
+            'content_based_filtering',
+            'collaborative_filtering', 
+            'neural_network_scoring',
+            'ensemble_model',
+            'ab_testing',
+            'batch_recommendations',
+            'recommendation_explanations'
+        ],
+        'database': db_status,
+        'models': {
+            'collaborative_filter': {
+                'users': len(collaborative_filter.user_mapping),
+                'items': len(collaborative_filter.item_mapping)
+            },
+            'neural_scorer': {
+                'trained': neural_scorer.is_trained
+            }
+        }
     })
 
 
@@ -667,16 +1200,29 @@ def recommend():
         
         logger.info(f"Generating recommendations for user {user_id} with {len(available_pulses)} pulses")
         
-        # Score each pulse
+        # Check for A/B test variant
+        variant = ab_test_manager.get_variant(user_id, 'recommendation_weights')
+        if variant:
+            model_ensemble.set_weights(variant.get('weights', {}))
+            logger.info(f"Using A/B test variant for user {user_id}")
+        
+        # Score each pulse using advanced ML ensemble
         recommendations = []
         for pulse in available_pulses:
-            score = recommender.calculate_pulse_score(pulse, user_features)
+            score = recommender.calculate_pulse_score(
+                pulse, 
+                user_features, 
+                user_id=user_id,
+                use_ensemble=True
+            )
             reason = recommender.generate_reason(pulse, user_features, score)
             
             recommendations.append({
                 'pulseId': pulse['id'],
                 'score': round(score, 3),
-                'reason': reason
+                'reason': reason,
+                'category': pulse.get('category'),
+                'distance': pulse.get('location', {}).get('distance')
             })
         
         # Sort by score (highest first)
@@ -711,20 +1257,326 @@ def recommend():
 @app.route('/train', methods=['POST'])
 def train():
     """
-    Train/update the recommendation model
-    This is a placeholder for future ML model training
+    Train/update the recommendation models
+    
+    Request body:
+    {
+        "model": "all" | "collaborative" | "neural",  // Which model to train
+        "days": 30,  // Number of days of data to use
+        "force": false  // Force retrain even if recently trained
+    }
     """
     try:
-        data = request.json
-        logger.info("Train endpoint called - model training not yet implemented")
+        data = request.json or {}
+        model_type = data.get('model', 'all')
+        days = data.get('days', 30)
+        force = data.get('force', False)
         
-        return jsonify({
+        if not db_service:
+            return jsonify({'error': 'Database not available'}), 503
+        
+        results = {
             'status': 'success',
-            'message': 'Model training scheduled (placeholder)'
-        })
+            'models_trained': [],
+            'interaction_count': 0
+        }
+        
+        # Get interactions for training
+        interactions = get_all_interactions(days=days)
+        results['interaction_count'] = len(interactions)
+        
+        if not interactions:
+            return jsonify({
+                'status': 'no_data',
+                'message': 'No interaction data available for training'
+            })
+        
+        # Train collaborative filter
+        if model_type in ['all', 'collaborative']:
+            try:
+                with model_update_lock:
+                    collaborative_filter.fit(interactions)
+                results['models_trained'].append('collaborative_filter')
+                logger.info(f"Trained collaborative filter with {len(interactions)} interactions")
+            except Exception as e:
+                logger.error(f"Error training collaborative filter: {e}")
+                results['errors'] = results.get('errors', []) + [f"Collaborative filter: {str(e)}"]
+        
+        # Train neural network (requires labeled data from positive interactions)
+        if model_type in ['all', 'neural']:
+            try:
+                # Create training data from interactions
+                positive_interactions = [i for i in interactions if i['interactionType'] in ['join', 'message', 'invite']]
+                negative_interactions = [i for i in interactions if i['interactionType'] == 'view'][:len(positive_interactions)]
+                
+                if len(positive_interactions) >= 10:
+                    features_batch = []
+                    labels = []
+                    
+                    # This is a simplified training - in production you'd have more sophisticated data
+                    for interaction in positive_interactions[:100]:
+                        user_features = db_service.get_user_features(interaction['userId']) or {}
+                        pulse_features = {'id': interaction['pulseId'], 'category': 'unknown'}
+                        features = neural_scorer.extract_features(user_features, pulse_features)
+                        features_batch.append(features)
+                        labels.append(1.0)
+                    
+                    for interaction in negative_interactions[:100]:
+                        user_features = db_service.get_user_features(interaction['userId']) or {}
+                        pulse_features = {'id': interaction['pulseId'], 'category': 'unknown'}
+                        features = neural_scorer.extract_features(user_features, pulse_features)
+                        features_batch.append(features)
+                        labels.append(0.2)  # Low score for view-only
+                    
+                    # Train for a few epochs
+                    for epoch in range(5):
+                        neural_scorer.train_batch(features_batch, labels, learning_rate=0.01)
+                    
+                    results['models_trained'].append('neural_scorer')
+                    logger.info(f"Trained neural scorer with {len(features_batch)} samples")
+                else:
+                    results['warnings'] = results.get('warnings', []) + ['Not enough positive interactions for neural training']
+            except Exception as e:
+                logger.error(f"Error training neural scorer: {e}")
+                results['errors'] = results.get('errors', []) + [f"Neural scorer: {str(e)}"]
+        
+        return jsonify(results)
     
     except Exception as e:
         logger.error(f"Error in train endpoint: {e}")
+        return jsonify({'error': 'Internal server error'}), 500
+
+
+@app.route('/similar-users/<user_id>', methods=['GET'])
+def get_similar_users(user_id: str):
+    """
+    Get users similar to the given user based on collaborative filtering
+    
+    Query params:
+    - limit: Maximum number of similar users (default: 10)
+    """
+    try:
+        limit = request.args.get('limit', 10, type=int)
+        
+        similar = collaborative_filter.get_similar_users(user_id, top_k=limit)
+        
+        return jsonify({
+            'userId': user_id,
+            'similarUsers': [
+                {'userId': uid, 'similarity': round(sim, 3)}
+                for uid, sim in similar
+            ]
+        })
+    
+    except Exception as e:
+        logger.error(f"Error getting similar users: {e}")
+        return jsonify({'error': 'Internal server error'}), 500
+
+
+@app.route('/ab-test', methods=['POST'])
+def create_ab_test():
+    """
+    Create or update an A/B test experiment
+    
+    Request body:
+    {
+        "name": "recommendation_weights",
+        "variants": [
+            {"name": "control", "weights": {"content": 0.3, "collaborative": 0.25, "neural": 0.2}},
+            {"name": "neural_heavy", "weights": {"content": 0.2, "collaborative": 0.2, "neural": 0.4}}
+        ]
+    }
+    """
+    try:
+        data = request.json
+        name = data.get('name')
+        variants = data.get('variants')
+        
+        if not name or not variants:
+            return jsonify({'error': 'name and variants are required'}), 400
+        
+        ab_test_manager.create_experiment(name, variants)
+        
+        return jsonify({
+            'status': 'success',
+            'experiment': name,
+            'variantCount': len(variants)
+        })
+    
+    except Exception as e:
+        logger.error(f"Error creating A/B test: {e}")
+        return jsonify({'error': 'Internal server error'}), 500
+
+
+@app.route('/ab-test/<experiment_name>/variant/<user_id>', methods=['GET'])
+def get_ab_variant(experiment_name: str, user_id: str):
+    """Get the A/B test variant assigned to a user"""
+    try:
+        variant = ab_test_manager.get_variant(user_id, experiment_name)
+        
+        if variant:
+            return jsonify({
+                'experiment': experiment_name,
+                'userId': user_id,
+                'variant': variant
+            })
+        else:
+            return jsonify({'error': 'Experiment not found or not active'}), 404
+    
+    except Exception as e:
+        logger.error(f"Error getting A/B variant: {e}")
+        return jsonify({'error': 'Internal server error'}), 500
+
+
+@app.route('/model-stats', methods=['GET'])
+def get_model_stats():
+    """Get statistics about the ML models"""
+    try:
+        stats = {
+            'collaborative_filter': {
+                'user_count': len(collaborative_filter.user_mapping),
+                'item_count': len(collaborative_filter.item_mapping),
+                'last_update': collaborative_filter.last_update.isoformat() if collaborative_filter.last_update else None
+            },
+            'neural_scorer': {
+                'is_trained': neural_scorer.is_trained,
+                'input_dim': neural_scorer.input_dim,
+                'hidden_dim': neural_scorer.hidden_dim
+            },
+            'ensemble': {
+                'weights': model_ensemble.weights
+            },
+            'ab_tests': {
+                'active_experiments': list(ab_test_manager.experiments.keys())
+            }
+        }
+        
+        return jsonify(stats)
+    
+    except Exception as e:
+        logger.error(f"Error getting model stats: {e}")
+        return jsonify({'error': 'Internal server error'}), 500
+
+
+@app.route('/batch-recommend', methods=['POST'])
+def batch_recommend():
+    """
+    Generate recommendations for multiple users in batch
+    Useful for pre-computing recommendations
+    
+    Request body:
+    {
+        "userIds": ["user1", "user2", "user3"],
+        "maxResults": 10
+    }
+    """
+    try:
+        data = request.json
+        user_ids = data.get('userIds', [])
+        max_results = data.get('maxResults', 10)
+        
+        if not user_ids:
+            return jsonify({'error': 'userIds are required'}), 400
+        
+        if not db_service:
+            return jsonify({'error': 'Database not available'}), 503
+        
+        # Get all active pulses once
+        available_pulses = db_service.get_active_pulses()
+        
+        results = {}
+        for user_id in user_ids[:50]:  # Limit to 50 users per batch
+            try:
+                user_features = db_service.get_user_features(user_id) or {
+                    'preferredCategories': [],
+                    'preferredTimeSlots': [],
+                    'socialActivityScore': 0.5
+                }
+                
+                recommendations = []
+                for pulse in available_pulses:
+                    score = recommender.calculate_pulse_score(
+                        pulse, user_features, user_id=user_id
+                    )
+                    recommendations.append({
+                        'pulseId': pulse['id'],
+                        'score': round(score, 3)
+                    })
+                
+                recommendations.sort(key=lambda x: x['score'], reverse=True)
+                results[user_id] = recommendations[:max_results]
+            except Exception as e:
+                logger.error(f"Error recommending for user {user_id}: {e}")
+                results[user_id] = {'error': str(e)}
+        
+        return jsonify({
+            'status': 'success',
+            'userCount': len(results),
+            'recommendations': results
+        })
+    
+    except Exception as e:
+        logger.error(f"Error in batch recommend: {e}")
+        return jsonify({'error': 'Internal server error'}), 500
+
+
+@app.route('/explain/<user_id>/<pulse_id>', methods=['GET'])
+def explain_recommendation(user_id: str, pulse_id: str):
+    """
+    Get detailed explanation of why a pulse was recommended to a user
+    """
+    try:
+        # Get user features
+        user_features = {}
+        if db_service:
+            user_features = db_service.get_user_features(user_id) or {}
+        
+        if not user_features:
+            user_features = {
+                'preferredCategories': [],
+                'preferredTimeSlots': [],
+                'socialActivityScore': 0.5
+            }
+        
+        # Mock pulse data (in production, fetch from DB)
+        pulse = {'id': pulse_id, 'category': 'unknown'}
+        if db_service:
+            pulses = db_service.get_active_pulses()
+            for p in pulses:
+                if p['id'] == pulse_id:
+                    pulse = p
+                    break
+        
+        # Calculate individual scores
+        explanation = {
+            'userId': user_id,
+            'pulseId': pulse_id,
+            'scores': {
+                'content': round(recommender._content_based_score(pulse, user_features), 3),
+                'temporal': round(recommender._temporal_score(pulse, user_features), 3),
+                'location': round(recommender._location_score(pulse, user_features), 3),
+                'social': round(recommender._social_score(pulse, user_features), 3),
+                'popularity': round(recommender._popularity_score(pulse), 3),
+                'recency': round(recommender._recency_score(pulse), 3),
+            },
+            'collaborative_score': round(collaborative_filter.predict_score(user_id, pulse_id), 3),
+            'final_score': round(recommender.calculate_pulse_score(pulse, user_features, user_id=user_id), 3),
+            'ensemble_weights': model_ensemble.weights,
+            'user_features': user_features,
+            'pulse_features': {
+                'category': pulse.get('category'),
+                'participantCount': pulse.get('participantCount'),
+                'eventTime': pulse.get('eventTime'),
+                'location': pulse.get('location', {}).get('city')
+            },
+            'reason': recommender.generate_reason(pulse, user_features, 0.7)
+        }
+        
+        return jsonify(explanation)
+    
+    except Exception as e:
+        logger.error(f"Error explaining recommendation: {e}")
+        return jsonify({'error': 'Internal server error'}), 500
         return jsonify({'error': 'Internal server error'}), 500
 
 

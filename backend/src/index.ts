@@ -12,6 +12,7 @@ import settingsRoute from './routes/settings';
 import activityRoute from './routes/activity';
 import highlightsRoute from './routes/highlights';
 import recommendationsRoute from './routes/recommendations';
+import mlAnalyticsRoute from './routes/ml_analytics';
 import admin from './firebase';
 import http from 'http';
 import { userSockets, getIo, setIo, setUserOnline, setUserOffline, getUserActivity, getOnlineUsers } from './realtime';
@@ -77,6 +78,9 @@ app.use('/api/highlights', highlightsRoute);
 
 // ML Recommendations routes
 app.use('/api/recommendations', recommendationsRoute);
+
+// ML Analytics routes (admin)
+app.use('/api/ml-analytics', mlAnalyticsRoute);
 
 // --- Notifications REST endpoints ---
 // List notifications for the authenticated user (paged)

@@ -116,6 +116,9 @@ class _PulseDetailPageState extends State<PulseDetailPage>
       if (pulseData != null) {
         _model.setPulseData(pulseData);
         _model.setError(null);
+
+        // Track pulse view for ML
+        ApiService.instance.trackPulseView(widget.pulseId);
       } else {
         _model.setError('Pulse not found');
       }
@@ -138,6 +141,9 @@ class _PulseDetailPageState extends State<PulseDetailPage>
       final result = await ApiService.instance.joinPulse(widget.pulseId);
 
       if (result != null && result['success'] == true) {
+        // Track join interaction for ML
+        await ApiService.instance.trackPulseJoin(widget.pulseId);
+
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(

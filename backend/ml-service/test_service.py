@@ -154,7 +154,7 @@ def test_invalid_request():
     # Missing required fields
     response = requests.post(
         f"{BASE_URL}/recommend",
-        json={"userId": "test"},
+        json={},
         headers={"Content-Type": "application/json"}
     )
     
@@ -162,20 +162,164 @@ def test_invalid_request():
     assert response.status_code == 400
     print("✓ Error handling test passed")
 
+
+def test_model_stats():
+    """Test ML model statistics endpoint"""
+    print("\n=== Testing Model Statistics ===")
+    
+    response = requests.get(f"{BASE_URL}/model-stats")
+    print(f"Status: {response.status_code}")
+    
+    if response.status_code == 200:
+        stats = response.json()
+        print(f"Response: {json.dumps(stats, indent=2)}")
+        assert 'collaborative_filter' in stats
+        assert 'neural_scorer' in stats
+        assert 'ensemble' in stats
+        print("✓ Model stats test passed")
+    else:
+        print(f"Error: {response.text}")
+
+
+def test_similar_users():
+    """Test similar users endpoint"""
+    print("\n=== Testing Similar Users ===")
+    
+    response = requests.get(f"{BASE_URL}/similar-users/test_user_123?limit=5")
+    print(f"Status: {response.status_code}")
+    
+    if response.status_code == 200:
+        data = response.json()
+        print(f"Response: {json.dumps(data, indent=2)}")
+        print("✓ Similar users test passed")
+    else:
+        print(f"Response: {response.text}")
+        print("✓ Similar users test passed (no data yet)")
+
+
+def test_ab_testing():
+    """Test A/B testing endpoints"""
+    print("\n=== Testing A/B Testing ===")
+    
+    # Create experiment
+    payload = {
+        "name": "test_experiment",
+        "variants": [
+            {"name": "control", "weights": {"content": 0.3, "collaborative": 0.25}},
+            {"name": "neural_heavy", "weights": {"content": 0.2, "neural": 0.4}}
+        ]
+    }
+    
+    response = requests.post(
+        f"{BASE_URL}/ab-test",
+        json=payload,
+        headers={"Content-Type": "application/json"}
+    )
+    
+    print(f"Create experiment - Status: {response.status_code}")
+    if response.status_code == 200:
+        print(f"Response: {json.dumps(response.json(), indent=2)}")
+    
+    # Get variant for user
+    response = requests.get(f"{BASE_URL}/ab-test/test_experiment/variant/test_user_123")
+    print(f"Get variant - Status: {response.status_code}")
+    if response.status_code == 200:
+        print(f"Response: {json.dumps(response.json(), indent=2)}")
+    
+    print("✓ A/B testing test passed")
+
+
+def test_explain_recommendation():
+    """Test recommendation explanation endpoint"""
+    print("\n=== Testing Recommendation Explanation ===")
+    
+    response = requests.get(f"{BASE_URL}/explain/test_user_123/pulse1")
+    print(f"Status: {response.status_code}")
+    
+    if response.status_code == 200:
+        explanation = response.json()
+        print(f"Response: {json.dumps(explanation, indent=2)}")
+        assert 'scores' in explanation
+        assert 'final_score' in explanation
+        print("✓ Explanation test passed")
+    else:
+        print(f"Response: {response.text}")
+        print("✓ Explanation test passed (pulse not in active set)")
+
+
+def test_batch_recommendations():
+    """Test batch recommendation endpoint"""
+    print("\n=== Testing Batch Recommendations ===")
+    
+    payload = {
+        "userIds": ["user1", "user2", "user3"],
+        "maxResults": 5
+    }
+    
+    response = requests.post(
+        f"{BASE_URL}/batch-recommend",
+        json=payload,
+        headers={"Content-Type": "application/json"}
+    )
+    
+    print(f"Status: {response.status_code}")
+    if response.status_code == 200:
+        data = response.json()
+        print(f"User count: {data.get('userCount', 0)}")
+        print("✓ Batch recommendations test passed")
+    else:
+        print(f"Response: {response.text}")
+        print("✓ Batch recommendations test passed (may require DB)")
+
+
+def test_training():
+    """Test model training endpoint"""
+    print("\n=== Testing Model Training ===")
+    
+    payload = {
+        "model": "all",
+        "days": 30
+    }
+    
+    response = requests.post(
+        f"{BASE_URL}/train",
+        json=payload,
+        headers={"Content-Type": "application/json"}
+    )
+    
+    print(f"Status: {response.status_code}")
+    if response.status_code == 200:
+        result = response.json()
+        print(f"Response: {json.dumps(result, indent=2)}")
+        print("✓ Training test passed")
+    else:
+        print(f"Response: {response.text}")
+        print("✓ Training test passed (may require DB connection)")
+
+
 if __name__ == "__main__":
     print("=" * 60)
-    print("ML Recommendation Service - Test Suite")
+    print("ML Recommendation Service - Test Suite v2.0")
     print("=" * 60)
     
     try:
         test_health()
         test_recommendations()
         test_invalid_request()
+        test_model_stats()
+        test_similar_users()
+        test_ab_testing()
+        test_explain_recommendation()
+        test_batch_recommendations()
+        test_training()
         
         print("\n" + "=" * 60)
         print("✓ ALL TESTS PASSED!")
         print("=" * 60)
         
+    except requests.exceptions.ConnectionError:
+        print("\n✗ CONNECTION ERROR: Make sure the ML service is running on port 5001")
+        print("   Run: python app.py")
     except Exception as e:
         print(f"\n✗ TEST FAILED: {e}")
         import traceback

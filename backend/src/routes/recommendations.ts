@@ -295,4 +295,167 @@ router.delete('/cache', async (req, res) => {
   }
 });
 
+// ============================================================================
+// ADVANCED ML ENDPOINTS
+// ============================================================================
+
+import {
+  trainMLModels,
+  getSimilarUsers,
+  explainRecommendation,
+  getMLModelStats,
+  createABTest,
+  batchRecommendations,
+} from '../services/recommendation';
+
+/**
+ * POST /api/recommendations/train
+ * Trigger ML model training (admin only)
+ */
+router.post('/train', async (req, res) => {
+  try {
+    const { model = 'all', days = 30 } = req.body;
+
+    console.log(`Training ML models: ${model}, using ${days} days of data`);
+
+    const result = await trainMLModels(model, days);
+
+    res.json(result);
+  } catch (error) {
+    console.error('Error training ML models:', error);
+    res.status(500).json({ error: 'Failed to train ML models' });
+  }
+});
+
+/**
+ * GET /api/recommendations/similar-users
+ * Get users similar to the authenticated user
+ */
+router.get('/similar-users', async (req, res) => {
+  try {
+    const userId = (req.user as any).id;
+    const limit = req.query.limit ? parseInt(req.query.limit as string) : 10;
+
+    const similarUsers = await getSimilarUsers(userId, limit);
+
+    // Fetch user details for similar users
+    const userDetails = await prisma.user.findMany({
+      where: { id: { in: similarUsers.map(u => u.userId) } },
+      select: {
+        id: true,
+        displayName: true,
+        profileImageUrl: true,
+      },
+    });
+
+    const enrichedUsers = similarUsers.map(su => {
+      const details = userDetails.find(u => u.id === su.userId);
+      return {
+        ...su,
+        displayName: details?.displayName,
+        profileImageUrl: details?.profileImageUrl,
+      };
+    });
+
+    res.json({
+      userId,
+      similarUsers: enrichedUsers,
+    });
+  } catch (error) {
+    console.error('Error getting similar users:', error);
+    res.status(500).json({ error: 'Failed to get similar users' });
+  }
+});
+
+/**
+ * GET /api/recommendations/explain/:pulseId
+ * Get explanation for why a pulse was recommended
+ */
+router.get('/explain/:pulseId', async (req, res) => {
+  try {
+    const userId = (req.user as any).id;
+    const { pulseId } = req.params;
+
+    const explanation = await explainRecommendation(userId, pulseId);
+
+    if (explanation) {
+      res.json(explanation);
+    } else {
+      res.status(404).json({ error: 'Explanation not available' });
+    }
+  } catch (error) {
+    console.error('Error explaining recommendation:', error);
+    res.status(500).json({ error: 'Failed to explain recommendation' });
+  }
+});
+
+/**
+ * GET /api/recommendations/model-stats
+ * Get ML model statistics
+ */
+router.get('/model-stats', async (req, res) => {
+  try {
+    const stats = await getMLModelStats();
+
+    if (stats) {
+      res.json(stats);
+    } else {
+      res.status(503).json({ error: 'ML service unavailable' });
+    }
+  } catch (error) {
+    console.error('Error getting model stats:', error);
+    res.status(500).json({ error: 'Failed to get model stats' });
+  }
+});
+
+/**
+ * POST /api/recommendations/ab-test
+ * Create an A/B test experiment (admin only)
+ */
+router.post('/ab-test', async (req, res) => {
+  try {
+    const { name, variants } = req.body;
+
+    if (!name || !variants || !Array.isArray(variants)) {
+      return res.status(400).json({ error: 'name and variants array are required' });
+    }
+
+    const success = await createABTest(name, variants);
+
+    if (success) {
+      res.json({ success: true, experiment: name });
+    } else {
+      res.status(500).json({ error: 'Failed to create A/B test' });
+    }
+  } catch (error) {
+    console.error('Error creating A/B test:', error);
+    res.status(500).json({ error: 'Failed to create A/B test' });
+  }
+});
+
+/**
+ * POST /api/recommendations/batch
+ * Get batch recommendations for multiple users (admin/system use)
+ */
+router.post('/batch', async (req, res) => {
+  try {
+    const { userIds, maxResults = 10 } = req.body;
+
+    if (!userIds || !Array.isArray(userIds)) {
+      return res.status(400).json({ error: 'userIds array is required' });
+    }
+
+    const recommendations = await batchRecommendations(userIds, maxResults);
+
+    res.json({
+      success: true,
+      userCount: Object.keys(recommendations).length,
+      recommendations,
+    });
+  } catch (error) {
+    console.error('Error getting batch recommendations:', error);
+    res.status(500).json({ error: 'Failed to get batch recommendations' });
+  }
+});
+
 export default router;

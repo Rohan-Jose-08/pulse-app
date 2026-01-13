@@ -73,6 +73,7 @@ class _LiveGroupChatPageState extends ConsumerState<LiveGroupChatPage>
   bool _someoneTyping = false;
   final _random = Random();
   String? _reactingToMessageId;
+  String? _pulseId; // Track pulse ID for ML interactions
 
   // Pulse status
   bool _isPulseLive = true;
@@ -141,6 +142,9 @@ class _LiveGroupChatPageState extends ConsumerState<LiveGroupChatPage>
       if (mounted) {
         setState(() => _isLoading = false);
         await HapticUtils.light();
+
+        // Extract pulse ID from chat name or metadata if available
+        _extractPulseId();
       }
     } catch (e) {
       if (mounted) {
@@ -155,6 +159,36 @@ class _LiveGroupChatPageState extends ConsumerState<LiveGroupChatPage>
           actionLabel: 'Retry',
           onAction: _initializeChat,
         );
+      }
+    }
+  }
+
+  /// Extract pulse ID from chat to track ML interactions
+  void _extractPulseId() {
+    // The pulse ID might be in the chat ID or we need to query it
+    // For now, check if this is a pulse chat based on having pulseName
+    if (widget.pulseName != null) {
+      // Try to extract pulse ID - it might be in the chat ID
+      // Format could be: pulse_<pulseId>_chat or just the pulseId
+      final chatId = widget.chatId;
+      if (chatId.contains('pulse')) {
+        final parts = chatId.split('_');
+        if (parts.length > 1) {
+          _pulseId = parts[1];
+          print('[LiveGroupChat] Extracted pulse ID: $_pulseId');
+        }
+      }
+    }
+  }
+
+  /// Track message interaction for ML recommendations
+  Future<void> _trackPulseMessage() async {
+    if (_pulseId != null && _pulseId!.isNotEmpty) {
+      try {
+        await ApiService.instance.trackPulseMessage(_pulseId!);
+        print('[LiveGroupChat] Tracked message for pulse: $_pulseId');
+      } catch (e) {
+        print('[LiveGroupChat] Error tracking pulse message: $e');
       }
     }
   }
@@ -529,6 +563,12 @@ class _LiveGroupChatPageState extends ConsumerState<LiveGroupChatPage>
       );
       _input.clear();
       _setTyping(false);
+
+      // Track message interaction for ML (if this is a pulse chat)
+      if (widget.pulseName != null) {
+        // Pulse chat detected, track message interaction
+        _trackPulseMessage();
+      }
 
       // Wait a bit for the message to propagate before scrolling
       await Future.delayed(const Duration(milliseconds: 100));
