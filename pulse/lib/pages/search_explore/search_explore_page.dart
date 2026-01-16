@@ -124,53 +124,52 @@ class _SearchExplorePageState extends ConsumerState<SearchExplorePage>
                     color: theme.primary,
                     backgroundColor: theme.secondaryBackground,
                     child: CustomScrollView(
-                    child: CustomScrollView(
-                  controller: _scrollController,
-                  physics: const BouncingScrollPhysics(
-                      parent: AlwaysScrollableScrollPhysics()),
-                  slivers: [
-                    SliverToBoxAdapter(
-                      child: suggestionsUsers.when(
-                        data: (users) => suggestionsPulses.when(
-                          data: (pulses) => _LiveSuggestions(
-                            users: users,
-                            pulses: pulses,
-                            onSelect: (text) {
-                              _controller.text = text;
-                              ref.read(searchQueryProvider.notifier).state =
-                                  text;
-                              _focusNode.unfocus();
+                      controller: _scrollController,
+                      physics: const BouncingScrollPhysics(
+                          parent: AlwaysScrollableScrollPhysics()),
+                      slivers: [
+                        SliverToBoxAdapter(
+                          child: suggestionsUsers.when(
+                            data: (users) => suggestionsPulses.when(
+                              data: (pulses) => _LiveSuggestions(
+                                users: users,
+                                pulses: pulses,
+                                onSelect: (text) {
+                                  _controller.text = text;
+                                  ref.read(searchQueryProvider.notifier).state =
+                                      text;
+                                  _focusNode.unfocus();
+                                },
+                              ),
+                              loading: () => const SizedBox(height: 0),
+                              error: (_, __) => const SizedBox(height: 0),
+                            ),
+                            loading: () => const SizedBox(height: 0),
+                            error: (_, __) => const SizedBox(height: 0),
+                          ),
+                        ),
+                        SliverPadding(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 12, vertical: 8),
+                          sliver: SliverMasonryGrid.count(
+                            crossAxisCount: 2,
+                            mainAxisSpacing: 12,
+                            crossAxisSpacing: 12,
+                            childCount: exploreItems.length,
+                            itemBuilder: (context, index) {
+                              final pulse = exploreItems[index];
+                              return _PulseGridCard(pulse: pulse);
                             },
                           ),
-                      const SliverToBoxAdapter(child: SizedBox(height: 100)),
-                    ],
+                        ),
+                        SliverToBoxAdapter(
+                          child: _LoadMoreFooter(),
+                        ),
+                        const SliverToBoxAdapter(child: SizedBox(height: 100)),
+                      ],
+                    ),
                   ),
-                ),
-                ]       ),
-                        loading: () => const SizedBox(height: 0),
-                        error: (_, __) => const SizedBox(height: 0),
-                      ),
-                    ),
-                    SliverPadding(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 12, vertical: 8),
-                      sliver: SliverMasonryGrid.count(
-                        crossAxisCount: 2,
-                        mainAxisSpacing: 12,
-                        crossAxisSpacing: 12,
-                        childCount: exploreItems.length,
-                        itemBuilder: (context, index) {
-                          final pulse = exploreItems[index];
-                          return _PulseGridCard(pulse: pulse);
-                        },
-                      ),
-                    ),
-                    SliverToBoxAdapter(
-                      child: _LoadMoreFooter(),
-                    ),
-                    const SliverToBoxAdapter(child: SizedBox(height: 100)),
-                  ],
-                ),
+                ],
               ),
       ),
       bottomNavigationBar: const NavbarWidget(),

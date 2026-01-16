@@ -274,7 +274,7 @@ async function getAvailablePulses(
         select: {
           id: true,
           displayName: true,
-          photoUrl: true,
+          profileImageUrl: true,
         },
       },
       location: true,
@@ -289,34 +289,39 @@ async function getAvailablePulses(
   // Filter by location if provided
   if (latitude !== undefined && longitude !== undefined) {
     pulses = pulses.filter(pulse => {
-      if (!pulse.location) return false;
+      const location = pulse.location as { latitude: number; longitude: number } | null;
+      if (!location) return false;
       const distance = haversineDistance(
         latitude,
         longitude,
-        pulse.location.latitude,
-        pulse.location.longitude
+        location.latitude,
+        location.longitude
       );
       return distance <= radiusKm;
     });
   }
 
-  return pulses.map(p => ({
-    id: p.id,
-    title: p.title,
-    description: p.description,
-    category: p.category,
-    eventTime: p.eventTime,
-    authorId: p.authorId,
-    participantCount: p.participants.length,
-    location: p.location ? {
-      latitude: p.location.latitude,
-      longitude: p.location.longitude,
-      city: p.location.city,
-      distance: latitude && longitude
-        ? haversineDistance(latitude, longitude, p.location.latitude, p.location.longitude)
-        : undefined,
-    } : undefined,
-  }));
+  return pulses.map(p => {
+    const location = p.location as { latitude: number; longitude: number; city: string } | null;
+    const participants = p.participants as { id: string }[];
+    return {
+      id: p.id,
+      title: p.title,
+      description: p.description,
+      category: p.category,
+      eventTime: p.eventTime,
+      authorId: p.authorId,
+      participantCount: participants.length,
+      location: location ? {
+        latitude: location.latitude,
+        longitude: location.longitude,
+        city: location.city,
+        distance: latitude && longitude
+          ? haversineDistance(latitude, longitude, location.latitude, location.longitude)
+          : undefined,
+      } : undefined,
+    };
+  });
 }
 
 /**

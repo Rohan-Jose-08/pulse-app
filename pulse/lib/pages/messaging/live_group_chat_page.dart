@@ -651,8 +651,8 @@ class _LiveGroupChatPageState extends ConsumerState<LiveGroupChatPage>
               ListTile(
                 leading:
                     Icon(Icons.bluetooth_rounded, color: Colors.blueAccent),
-                title: const Text('Bluetooth Mesh (Experimental)'),
-                subtitle: const Text('Peer-to-peer local messaging'),
+                title: const Text('Bluetooth Mesh Network'),
+                subtitle: const Text('Multi-hop peer-to-peer messaging'),
                 trailing: _transportMode == ChatTransportMode.bluetooth
                     ? const Icon(Icons.check, color: Colors.blueAccent)
                     : null,
@@ -667,7 +667,7 @@ class _LiveGroupChatPageState extends ConsumerState<LiveGroupChatPage>
               Padding(
                 padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
                 child: Text(
-                  'Bluetooth mode is experimental – messages are kept locally and broadcast to nearby devices.',
+                  'Bluetooth mesh mode: Messages relay through nearby devices automatically (up to 5 hops). Works offline with automatic routing.',
                   style: t.bodySmall.override(color: t.secondaryText),
                 ),
               )

@@ -123,9 +123,6 @@ router.get('/top-recommendations', async (req, res) => {
     // Get most clicked recommendations
     const topRecommendations = await prisma.pulseRecommendation.findMany({
       where: { clicked: true },
-      include: {
-        // Note: You may need to join with Pulse table if relationship exists
-      },
       orderBy: { score: 'desc' },
       take: limit,
     });

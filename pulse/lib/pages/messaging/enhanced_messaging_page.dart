@@ -968,8 +968,8 @@ class _EnhancedMessagingPageState extends ConsumerState<EnhancedMessagingPage>
             ),
             ListTile(
               leading: const Icon(Icons.bluetooth_rounded),
-              title: const Text('Bluetooth Mesh (Experimental)'),
-              subtitle: const Text('Offline, nearby only – prototype'),
+              title: const Text('Bluetooth Mesh Network'),
+              subtitle: const Text('Multi-hop offline messaging'),
               trailing: current == ChatTransportMode.bluetooth
                   ? Icon(Icons.check, color: t.primary)
                   : null,
@@ -985,7 +985,7 @@ class _EnhancedMessagingPageState extends ConsumerState<EnhancedMessagingPage>
             Padding(
               padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
               child: Text(
-                'Bluetooth mode is a local prototype – messages are kept locally and broadcast simulation only.',
+                'Bluetooth mesh: Messages relay through nearby devices automatically (up to 5 hops) with intelligent routing.',
                 style: t.bodySmall.override(color: t.secondaryText),
               ),
             )
@@ -1349,7 +1349,8 @@ class _EnhancedMessagingPageState extends ConsumerState<EnhancedMessagingPage>
                   color: Colors.blue.withOpacity(.1),
                   padding:
                       const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
-                  child: Text('Bluetooth mesh prototype – messages stay local',
+                  child: Text(
+                      'Bluetooth mesh network – auto-relaying through nearby devices',
                       style: t.bodySmall.override(color: t.primary)),
                 ),
               Container(
