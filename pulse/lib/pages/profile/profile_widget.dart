@@ -2,6 +2,7 @@ import '/backend/api_service.dart';
 import '/components/pulse_card_widget_material.dart';
 import '/components/navbar_widget.dart';
 import '/components/highlights_row.dart';
+import '/components/theme_toggle.dart';
 import '/flutter_flow/flutter_flow_theme.dart';
 import '/flutter_flow/flutter_flow_util.dart';
 import 'package:go_router/go_router.dart';
@@ -16,6 +17,9 @@ import '/auth/firebase_auth/auth_util.dart';
 import '/backend/storage_service.dart';
 import '../highlights/highlight_viewer_page.dart';
 import '../highlights/manage_highlight_page.dart';
+import '/main.dart';
+import '../settings/blocked_muted_users_page.dart';
+import '/widgets/moderation/moderation_status_banner.dart';
 export 'profile_model.dart';
 
 class ProfileWidget extends StatefulWidget {
@@ -92,6 +96,16 @@ class _ProfileWidgetState extends State<ProfileWidget>
   String _languagePreference = 'en_US';
   double _textSizeScale = 1.0;
 
+  // Privacy settings states
+  String _profileVisibility = 'public'; // public, friends, private
+  String _locationSharing = 'friends'; // everyone, friends, nobody
+  String _pulseHistoryVisibility = 'friends'; // public, friends, only_me
+  String _friendRequestsFrom =
+      'everyone'; // everyone, friends_of_friends, nobody
+  bool _showOnlineStatus = true;
+  bool _allowMessageRequests = true;
+  bool _showInSearch = true;
+
   // Activity status states
   String _currentActivityStatus = 'online'; // online, away, offline
   bool _appearOffline = false; // Manual offline mode
@@ -132,6 +146,15 @@ class _ProfileWidgetState extends State<ProfileWidget>
           _languagePreference = settings['languagePreference'] ?? 'en_US';
           _textSizeScale =
               (settings['textSizeScale'] as num?)?.toDouble() ?? 1.0;
+          // Privacy settings
+          _profileVisibility = settings['profileVisibility'] ?? 'public';
+          _locationSharing = settings['locationSharing'] ?? 'friends';
+          _pulseHistoryVisibility =
+              settings['pulseHistoryVisibility'] ?? 'friends';
+          _friendRequestsFrom = settings['friendRequestsFrom'] ?? 'everyone';
+          _showOnlineStatus = settings['showOnlineStatus'] ?? true;
+          _allowMessageRequests = settings['allowMessageRequests'] ?? true;
+          _showInSearch = settings['showInSearch'] ?? true;
         });
       }
     } catch (e) {
@@ -198,9 +221,9 @@ class _ProfileWidgetState extends State<ProfileWidget>
                   _buildSettingsSectionHeader(context, 'Privacy'),
                   _buildSettingsTile(
                     context,
-                    icon: Icons.lock_outline_rounded,
-                    title: 'Privacy Settings',
-                    subtitle: 'Control who can see your information',
+                    icon: Icons.shield_outlined,
+                    title: 'Profile Visibility',
+                    subtitle: _getVisibilitySubtitle(),
                     onTap: () => _showPrivacySettings(context),
                   ),
                   _buildSettingsTile(
@@ -476,7 +499,7 @@ class _ProfileWidgetState extends State<ProfileWidget>
                           borderRadius: BorderRadius.circular(12),
                         ),
                         child: const Text(
-                          'Alpha-v0.0.1',
+                          'Alpha-v0.7.0',
                           style: TextStyle(
                             color: Colors.white,
                             fontSize: 10,
@@ -1040,6 +1063,75 @@ class _ProfileWidgetState extends State<ProfileWidget>
     );
   }
 
+  // Get subtitle for visibility settings tile
+  String _getVisibilitySubtitle() {
+    final parts = <String>[];
+    if (_profileVisibility == 'public') {
+      parts.add('Public profile');
+    } else if (_profileVisibility == 'friends') {
+      parts.add('Friends only');
+    } else {
+      parts.add('Private profile');
+    }
+    if (!_showInSearch) {
+      parts.add('Hidden from search');
+    }
+    return parts.join(' • ');
+  }
+
+  // Helper to convert visibility value to index
+  int _getProfileVisibilityIndex() {
+    switch (_profileVisibility) {
+      case 'public':
+        return 0;
+      case 'friends':
+        return 1;
+      case 'private':
+        return 2;
+      default:
+        return 0;
+    }
+  }
+
+  int _getLocationSharingIndex() {
+    switch (_locationSharing) {
+      case 'everyone':
+        return 0;
+      case 'friends':
+        return 1;
+      case 'nobody':
+        return 2;
+      default:
+        return 1;
+    }
+  }
+
+  int _getPulseHistoryVisibilityIndex() {
+    switch (_pulseHistoryVisibility) {
+      case 'public':
+        return 0;
+      case 'friends':
+        return 1;
+      case 'only_me':
+        return 2;
+      default:
+        return 1;
+    }
+  }
+
+  int _getFriendRequestsFromIndex() {
+    switch (_friendRequestsFrom) {
+      case 'everyone':
+        return 0;
+      case 'friends_of_friends':
+        return 1;
+      case 'nobody':
+        return 2;
+      default:
+        return 0;
+    }
+  }
+
   // Privacy Settings Dialog
   void _showPrivacySettings(BuildContext context) {
     final theme = FlutterFlowTheme.of(context);
@@ -1047,157 +1139,376 @@ class _ProfileWidgetState extends State<ProfileWidget>
       context: context,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
-      builder: (context) => Container(
-        height: MediaQuery.of(context).size.height * 0.75,
-        decoration: BoxDecoration(
-          color: theme.secondaryBackground,
-          borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
+      builder: (context) => StatefulBuilder(
+        builder: (context, setModalState) => Container(
+          height: MediaQuery.of(context).size.height * 0.85,
+          decoration: BoxDecoration(
+            color: theme.secondaryBackground,
+            borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
+          ),
+          child: Column(
+            children: [
+              // Handle bar
+              Container(
+                margin: const EdgeInsets.symmetric(vertical: 12),
+                width: 40,
+                height: 4,
+                decoration: BoxDecoration(
+                  color: theme.alternate,
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+              // Header
+              Padding(
+                padding: const EdgeInsets.fromLTRB(20, 8, 20, 16),
+                child: Row(
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.all(10),
+                      decoration: BoxDecoration(
+                        color: theme.primary.withOpacity(0.1),
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: Icon(Icons.shield_outlined,
+                          color: theme.primary, size: 24),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'Profile Visibility',
+                            style: theme.headlineSmall.override(
+                              fontFamily: 'Inter',
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                          const SizedBox(height: 2),
+                          Text(
+                            'Control who can see your information',
+                            style: theme.bodySmall.override(
+                              fontFamily: 'Inter',
+                              color: theme.secondaryText,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              Divider(height: 1, color: theme.alternate),
+              // Privacy options
+              Expanded(
+                child: ListView(
+                  padding: const EdgeInsets.all(16),
+                  physics: const BouncingScrollPhysics(),
+                  children: [
+                    // Profile Visibility Section
+                    _buildPrivacySectionHeader(
+                        context, 'Who Can See Your Profile'),
+                    const SizedBox(height: 8),
+                    _buildPrivacyOption(
+                      context,
+                      setModalState,
+                      icon: Icons.person_outline_rounded,
+                      title: 'Profile Visibility',
+                      subtitle: 'Choose who can view your full profile',
+                      options: ['Public', 'Friends Only', 'Private'],
+                      values: ['public', 'friends', 'private'],
+                      selectedValue: _profileVisibility,
+                      onChanged: (value) async {
+                        setModalState(() => _profileVisibility = value);
+                        setState(() => _profileVisibility = value);
+                        await _updateSetting({'profileVisibility': value});
+                      },
+                    ),
+                    const SizedBox(height: 12),
+                    _buildPrivacyOption(
+                      context,
+                      setModalState,
+                      icon: Icons.history_rounded,
+                      title: 'Pulse History',
+                      subtitle: 'Who can see your past pulses',
+                      options: ['Public', 'Friends Only', 'Only Me'],
+                      values: ['public', 'friends', 'only_me'],
+                      selectedValue: _pulseHistoryVisibility,
+                      onChanged: (value) async {
+                        setModalState(() => _pulseHistoryVisibility = value);
+                        setState(() => _pulseHistoryVisibility = value);
+                        await _updateSetting({'pulseHistoryVisibility': value});
+                      },
+                    ),
+
+                    const SizedBox(height: 24),
+                    _buildPrivacySectionHeader(context, 'Location & Activity'),
+                    const SizedBox(height: 8),
+                    _buildPrivacyOption(
+                      context,
+                      setModalState,
+                      icon: Icons.location_on_outlined,
+                      title: 'Location Sharing',
+                      subtitle: 'Control who can see your location',
+                      options: ['Everyone', 'Friends Only', 'Nobody'],
+                      values: ['everyone', 'friends', 'nobody'],
+                      selectedValue: _locationSharing,
+                      onChanged: (value) async {
+                        setModalState(() => _locationSharing = value);
+                        setState(() => _locationSharing = value);
+                        await _updateSetting({'locationSharing': value});
+                      },
+                    ),
+                    const SizedBox(height: 12),
+                    _buildPrivacySwitchTile(
+                      context,
+                      setModalState,
+                      icon: Icons.circle,
+                      iconColor: _showOnlineStatus
+                          ? Colors.green
+                          : theme.secondaryText,
+                      title: 'Show Online Status',
+                      subtitle: 'Let others see when you\'re active',
+                      value: _showOnlineStatus,
+                      onChanged: (value) async {
+                        setModalState(() => _showOnlineStatus = value);
+                        setState(() => _showOnlineStatus = value);
+                        await _updateSetting({'showOnlineStatus': value});
+                      },
+                    ),
+
+                    const SizedBox(height: 24),
+                    _buildPrivacySectionHeader(context, 'Social & Discovery'),
+                    const SizedBox(height: 8),
+                    _buildPrivacyOption(
+                      context,
+                      setModalState,
+                      icon: Icons.person_add_outlined,
+                      title: 'Friend Requests',
+                      subtitle: 'Who can send you friend requests',
+                      options: ['Everyone', 'Friends of Friends', 'Nobody'],
+                      values: ['everyone', 'friends_of_friends', 'nobody'],
+                      selectedValue: _friendRequestsFrom,
+                      onChanged: (value) async {
+                        setModalState(() => _friendRequestsFrom = value);
+                        setState(() => _friendRequestsFrom = value);
+                        await _updateSetting({'friendRequestsFrom': value});
+                      },
+                    ),
+                    const SizedBox(height: 12),
+                    _buildPrivacySwitchTile(
+                      context,
+                      setModalState,
+                      icon: Icons.chat_bubble_outline_rounded,
+                      title: 'Allow Message Requests',
+                      subtitle: 'Receive messages from non-friends',
+                      value: _allowMessageRequests,
+                      onChanged: (value) async {
+                        setModalState(() => _allowMessageRequests = value);
+                        setState(() => _allowMessageRequests = value);
+                        await _updateSetting({'allowMessageRequests': value});
+                      },
+                    ),
+                    const SizedBox(height: 12),
+                    _buildPrivacySwitchTile(
+                      context,
+                      setModalState,
+                      icon: Icons.search_rounded,
+                      title: 'Show in Search',
+                      subtitle: 'Allow others to find you via search',
+                      value: _showInSearch,
+                      onChanged: (value) async {
+                        setModalState(() => _showInSearch = value);
+                        setState(() => _showInSearch = value);
+                        await _updateSetting({'showInSearch': value});
+                      },
+                    ),
+
+                    const SizedBox(height: 32),
+                    // Privacy summary card
+                    Container(
+                      padding: const EdgeInsets.all(16),
+                      decoration: BoxDecoration(
+                        gradient: LinearGradient(
+                          colors: [
+                            theme.primary.withOpacity(0.05),
+                            theme.secondary.withOpacity(0.05),
+                          ],
+                        ),
+                        borderRadius: BorderRadius.circular(16),
+                        border:
+                            Border.all(color: theme.primary.withOpacity(0.2)),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            children: [
+                              Icon(Icons.info_outline_rounded,
+                                  color: theme.primary, size: 20),
+                              const SizedBox(width: 8),
+                              Text(
+                                'Privacy Summary',
+                                style: theme.bodyLarge.override(
+                                  fontFamily: 'Inter',
+                                  fontWeight: FontWeight.w600,
+                                  color: theme.primary,
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 12),
+                          _buildPrivacySummaryItem(
+                            theme,
+                            'Profile: ${_getVisibilityLabel(_profileVisibility)}',
+                            _getPrivacyIcon(_profileVisibility),
+                          ),
+                          const SizedBox(height: 8),
+                          _buildPrivacySummaryItem(
+                            theme,
+                            'Location: ${_getLocationLabel(_locationSharing)}',
+                            _getPrivacyIcon(_locationSharing == 'nobody'
+                                ? 'private'
+                                : _locationSharing),
+                          ),
+                          const SizedBox(height: 8),
+                          _buildPrivacySummaryItem(
+                            theme,
+                            'Discoverable: ${_showInSearch ? 'Yes' : 'No'}',
+                            _showInSearch
+                                ? Icons.visibility
+                                : Icons.visibility_off,
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 24),
+                  ],
+                ),
+              ),
+            ],
+          ),
         ),
-        child: Column(
-          children: [
-            // Handle bar
-            Container(
-              margin: const EdgeInsets.symmetric(vertical: 12),
-              width: 40,
-              height: 4,
-              decoration: BoxDecoration(
-                color: theme.alternate,
-                borderRadius: BorderRadius.circular(2),
-              ),
-            ),
-            // Header
-            Padding(
-              padding: const EdgeInsets.all(20),
-              child: Row(
-                children: [
-                  Icon(Icons.lock_outline_rounded, color: theme.primary),
-                  const SizedBox(width: 12),
-                  Text(
-                    'Privacy Settings',
-                    style: theme.headlineSmall,
-                  ),
-                ],
-              ),
-            ),
-            const Divider(height: 1),
-            // Privacy options
-            Expanded(
-              child: ListView(
-                padding: const EdgeInsets.all(16),
-                children: [
-                  _buildPrivacyOption(
-                    context,
-                    title: 'Profile Visibility',
-                    subtitle: 'Control who can see your profile',
-                    options: ['Public', 'Friends Only', 'Private'],
-                    selectedIndex: 0, // TODO: Connect to state
-                  ),
-                  const SizedBox(height: 16),
-                  _buildPrivacyOption(
-                    context,
-                    title: 'Location Sharing',
-                    subtitle: 'Control who can see your location',
-                    options: ['Everyone', 'Friends', 'Nobody'],
-                    selectedIndex: 1,
-                  ),
-                  const SizedBox(height: 16),
-                  _buildPrivacyOption(
-                    context,
-                    title: 'Pulse History',
-                    subtitle: 'Who can see your past pulses',
-                    options: ['Public', 'Friends Only', 'Only Me'],
-                    selectedIndex: 1,
-                  ),
-                  const SizedBox(height: 16),
-                  _buildPrivacyOption(
-                    context,
-                    title: 'Friend Requests',
-                    subtitle: 'Who can send you friend requests',
-                    options: ['Everyone', 'Friends of Friends', 'Nobody'],
-                    selectedIndex: 0,
-                  ),
-                  const SizedBox(height: 24),
-                  SwitchListTile(
-                    title: Text('Show Online Status', style: theme.bodyLarge),
-                    subtitle: Text(
-                      'Let others see when you\'re online',
-                      style: theme.bodySmall,
-                    ),
-                    value: true, // TODO: Connect to state
-                    onChanged: (value) {},
-                    activeColor: theme.primary,
-                  ),
-                  SwitchListTile(
-                    title:
-                        Text('Allow Message Requests', style: theme.bodyLarge),
-                    subtitle: Text(
-                      'Receive messages from non-friends',
-                      style: theme.bodySmall,
-                    ),
-                    value: true,
-                    onChanged: (value) {},
-                    activeColor: theme.primary,
-                  ),
-                  SwitchListTile(
-                    title: Text('Show in Search', style: theme.bodyLarge),
-                    subtitle: Text(
-                      'Allow others to find you via search',
-                      style: theme.bodySmall,
-                    ),
-                    value: true,
-                    onChanged: (value) {},
-                    activeColor: theme.primary,
-                  ),
-                ],
-              ),
-            ),
-          ],
+      ),
+    );
+  }
+
+  Widget _buildPrivacySectionHeader(BuildContext context, String title) {
+    final theme = FlutterFlowTheme.of(context);
+    return Padding(
+      padding: const EdgeInsets.only(left: 4, bottom: 4),
+      child: Text(
+        title.toUpperCase(),
+        style: theme.labelSmall.override(
+          fontFamily: 'Inter',
+          color: theme.secondaryText,
+          fontWeight: FontWeight.w600,
+          letterSpacing: 0.5,
         ),
       ),
     );
   }
 
   Widget _buildPrivacyOption(
-    BuildContext context, {
+    BuildContext context,
+    StateSetter setModalState, {
+    required IconData icon,
     required String title,
     required String subtitle,
     required List<String> options,
-    required int selectedIndex,
+    required List<String> values,
+    required String selectedValue,
+    required Function(String) onChanged,
   }) {
     final theme = FlutterFlowTheme.of(context);
+    final selectedIndex = values.indexOf(selectedValue);
+
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
         color: theme.primaryBackground,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: theme.alternate),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: theme.alternate.withOpacity(0.5)),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(title,
-              style: theme.bodyLarge.override(
-                fontFamily: 'Inter',
-                fontWeight: FontWeight.w600,
-              )),
-          const SizedBox(height: 4),
-          Text(subtitle, style: theme.bodySmall),
-          const SizedBox(height: 12),
-          Wrap(
-            spacing: 8,
+          Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: theme.primary.withOpacity(0.1),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Icon(icon, color: theme.primary, size: 20),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      title,
+                      style: theme.bodyLarge.override(
+                        fontFamily: 'Inter',
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    Text(subtitle, style: theme.bodySmall),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          Row(
             children: options.asMap().entries.map((entry) {
               final isSelected = entry.key == selectedIndex;
-              return FilterChip(
-                label: Text(entry.value),
-                selected: isSelected,
-                onSelected: (selected) {
-                  // TODO: Update state
-                },
-                backgroundColor: theme.secondaryBackground,
-                selectedColor: theme.primary.withOpacity(0.2),
-                checkmarkColor: theme.primary,
-                labelStyle: TextStyle(
-                  color: isSelected ? theme.primary : theme.primaryText,
+              return Expanded(
+                child: Padding(
+                  padding: EdgeInsets.only(
+                    left: entry.key == 0 ? 0 : 4,
+                    right: entry.key == options.length - 1 ? 0 : 4,
+                  ),
+                  child: InkWell(
+                    onTap: () => onChanged(values[entry.key]),
+                    borderRadius: BorderRadius.circular(12),
+                    child: AnimatedContainer(
+                      duration: const Duration(milliseconds: 200),
+                      padding: const EdgeInsets.symmetric(
+                          vertical: 12, horizontal: 8),
+                      decoration: BoxDecoration(
+                        color: isSelected
+                            ? theme.primary
+                            : theme.secondaryBackground,
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(
+                          color: isSelected ? theme.primary : theme.alternate,
+                          width: isSelected ? 2 : 1,
+                        ),
+                        boxShadow: isSelected
+                            ? [
+                                BoxShadow(
+                                  color: theme.primary.withOpacity(0.3),
+                                  blurRadius: 8,
+                                  offset: const Offset(0, 2),
+                                )
+                              ]
+                            : null,
+                      ),
+                      child: Text(
+                        entry.value,
+                        textAlign: TextAlign.center,
+                        style: theme.bodySmall.override(
+                          fontFamily: 'Inter',
+                          color: isSelected ? Colors.white : theme.primaryText,
+                          fontWeight:
+                              isSelected ? FontWeight.w600 : FontWeight.normal,
+                        ),
+                      ),
+                    ),
+                  ),
                 ),
               );
             }).toList(),
@@ -1207,47 +1518,124 @@ class _ProfileWidgetState extends State<ProfileWidget>
     );
   }
 
-  // Blocked Users Dialog
-  void _showBlockedUsers(BuildContext context) {
+  Widget _buildPrivacySwitchTile(
+    BuildContext context,
+    StateSetter setModalState, {
+    required IconData icon,
+    Color? iconColor,
+    required String title,
+    required String subtitle,
+    required bool value,
+    required Function(bool) onChanged,
+  }) {
     final theme = FlutterFlowTheme.of(context);
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: Row(
-          children: [
-            Icon(Icons.block_rounded, color: theme.error),
-            const SizedBox(width: 12),
-            const Text('Blocked Users'),
-          ],
-        ),
-        content: SizedBox(
-          width: double.maxFinite,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text(
-                'You haven\'t blocked anyone yet.',
-                style: theme.bodyMedium,
-                textAlign: TextAlign.center,
-              ),
-              const SizedBox(height: 16),
-              Text(
-                'Blocked users won\'t be able to see your profile, send you messages, or interact with your content.',
-                style: theme.bodySmall.override(
-                  fontFamily: 'Inter',
-                  color: theme.secondaryText,
-                ),
-                textAlign: TextAlign.center,
-              ),
-            ],
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: theme.primaryBackground,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: theme.alternate.withOpacity(0.5)),
+      ),
+      child: Row(
+        children: [
+          Container(
+            padding: const EdgeInsets.all(8),
+            decoration: BoxDecoration(
+              color: (iconColor ?? theme.primary).withOpacity(0.1),
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: Icon(icon, color: iconColor ?? theme.primary, size: 20),
           ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Close'),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  title,
+                  style: theme.bodyLarge.override(
+                    fontFamily: 'Inter',
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                Text(subtitle, style: theme.bodySmall),
+              ],
+            ),
+          ),
+          Switch(
+            value: value,
+            onChanged: onChanged,
+            activeColor: theme.primary,
           ),
         ],
+      ),
+    );
+  }
+
+  Widget _buildPrivacySummaryItem(
+      FlutterFlowTheme theme, String text, IconData icon) {
+    return Row(
+      children: [
+        Icon(icon, size: 16, color: theme.secondaryText),
+        const SizedBox(width: 8),
+        Text(
+          text,
+          style: theme.bodySmall.override(
+            fontFamily: 'Inter',
+            color: theme.secondaryText,
+          ),
+        ),
+      ],
+    );
+  }
+
+  String _getVisibilityLabel(String value) {
+    switch (value) {
+      case 'public':
+        return 'Visible to everyone';
+      case 'friends':
+        return 'Friends only';
+      case 'private':
+        return 'Only you';
+      default:
+        return 'Public';
+    }
+  }
+
+  String _getLocationLabel(String value) {
+    switch (value) {
+      case 'everyone':
+        return 'Shared with everyone';
+      case 'friends':
+        return 'Friends only';
+      case 'nobody':
+        return 'Hidden';
+      default:
+        return 'Friends only';
+    }
+  }
+
+  IconData _getPrivacyIcon(String value) {
+    switch (value) {
+      case 'public':
+      case 'everyone':
+        return Icons.public;
+      case 'friends':
+        return Icons.people_outline;
+      case 'private':
+      case 'only_me':
+      case 'nobody':
+        return Icons.lock_outline;
+      default:
+        return Icons.public;
+    }
+  }
+
+  // Blocked Users - Navigate to full page
+  void _showBlockedUsers(BuildContext context) {
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => const BlockedMutedUsersPage(),
       ),
     );
   }
@@ -1593,18 +1981,19 @@ class _ProfileWidgetState extends State<ProfileWidget>
   // Theme Settings Dialog
   void _showThemeSettings(BuildContext context) {
     final theme = FlutterFlowTheme.of(context);
-    int selectedTheme = 0; // 0: System, 1: Light, 2: Dark
+    final currentThemeMode = MyApp.of(context).themeMode;
 
     showModalBottomSheet(
       context: context,
       backgroundColor: Colors.transparent,
-      builder: (context) => StatefulBuilder(
-        builder: (context, setState) => Container(
-          decoration: BoxDecoration(
-            color: theme.secondaryBackground,
-            borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
-          ),
-          padding: const EdgeInsets.all(20),
+      isScrollControlled: true,
+      builder: (modalContext) => Container(
+        decoration: BoxDecoration(
+          color: theme.secondaryBackground,
+          borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
+        ),
+        padding: const EdgeInsets.all(20),
+        child: SafeArea(
           child: Column(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -1636,8 +2025,11 @@ class _ProfileWidgetState extends State<ProfileWidget>
                 icon: Icons.brightness_auto_rounded,
                 title: 'System Default',
                 subtitle: 'Follow device settings',
-                isSelected: selectedTheme == 0,
-                onTap: () => setState(() => selectedTheme = 0),
+                isSelected: currentThemeMode == ThemeMode.system,
+                onTap: () {
+                  MyApp.of(context).setThemeMode(ThemeMode.system);
+                  Navigator.pop(modalContext);
+                },
               ),
               const SizedBox(height: 12),
               _buildThemeOption(
@@ -1645,8 +2037,11 @@ class _ProfileWidgetState extends State<ProfileWidget>
                 icon: Icons.light_mode_rounded,
                 title: 'Light Mode',
                 subtitle: 'Always use light theme',
-                isSelected: selectedTheme == 1,
-                onTap: () => setState(() => selectedTheme = 1),
+                isSelected: currentThemeMode == ThemeMode.light,
+                onTap: () {
+                  MyApp.of(context).setThemeMode(ThemeMode.light);
+                  Navigator.pop(modalContext);
+                },
               ),
               const SizedBox(height: 12),
               _buildThemeOption(
@@ -1654,29 +2049,11 @@ class _ProfileWidgetState extends State<ProfileWidget>
                 icon: Icons.dark_mode_rounded,
                 title: 'Dark Mode',
                 subtitle: 'Always use dark theme',
-                isSelected: selectedTheme == 2,
-                onTap: () => setState(() => selectedTheme = 2),
-              ),
-              const SizedBox(height: 24),
-              SizedBox(
-                width: double.infinity,
-                child: ElevatedButton(
-                  onPressed: () {
-                    // TODO: Implement theme change
-                    Navigator.pop(context);
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(content: Text('Theme updated successfully')),
-                    );
-                  },
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: theme.primary,
-                    padding: const EdgeInsets.symmetric(vertical: 14),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                  ),
-                  child: const Text('Apply Theme'),
-                ),
+                isSelected: currentThemeMode == ThemeMode.dark,
+                onTap: () {
+                  MyApp.of(context).setThemeMode(ThemeMode.dark);
+                  Navigator.pop(modalContext);
+                },
               ),
               const SizedBox(height: 10),
             ],
@@ -2707,22 +3084,53 @@ class _ProfileWidgetState extends State<ProfileWidget>
 
   Widget _buildHeader(BuildContext context) {
     final theme = FlutterFlowTheme.of(context);
+    final isDark = Theme.of(context).brightness == Brightness.dark;
 
     return Container(
       margin: const EdgeInsets.fromLTRB(16, 12, 16, 0),
       decoration: BoxDecoration(
         borderRadius: BorderRadius.circular(28),
-        color: theme.primary,
+        gradient: const LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [Color(0xFF6366F1), Color(0xFF8B5CF6), Color(0xFFEC4899)],
+          stops: [0.0, 0.5, 1.0],
+        ),
         boxShadow: [
           BoxShadow(
-            color: theme.primary.withOpacity(0.25),
-            blurRadius: 24.0,
-            offset: const Offset(0, 12),
+            color: const Color(0xFF6366F1).withOpacity(0.35),
+            blurRadius: 28.0,
+            offset: const Offset(0, 14),
           ),
         ],
       ),
       child: Stack(
         children: [
+          // Decorative circles
+          Positioned(
+            top: -30,
+            right: -30,
+            child: Container(
+              width: 100,
+              height: 100,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: Colors.white.withOpacity(0.1),
+              ),
+            ),
+          ),
+          Positioned(
+            bottom: -20,
+            left: -20,
+            child: Container(
+              width: 80,
+              height: 80,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: Colors.white.withOpacity(0.08),
+              ),
+            ),
+          ),
           Padding(
             padding: const EdgeInsets.all(24),
             child: Column(
@@ -2743,28 +3151,39 @@ class _ProfileWidgetState extends State<ProfileWidget>
                                 fontSize: 24,
                               ),
                               color: Colors.white,
+                              letterSpacing: -0.5,
                             ),
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
                           ),
-                          const SizedBox(height: 4),
+                          const SizedBox(height: 6),
                           if (_location != null) ...[
-                            Row(
-                              children: [
-                                Icon(
-                                  Icons.location_on_rounded,
-                                  color: Colors.white.withOpacity(0.8),
-                                  size: 16,
-                                ),
-                                const SizedBox(width: 4),
-                                Text(
-                                  _location!,
-                                  style: theme.bodyMedium.override(
-                                    font: GoogleFonts.inter(),
-                                    color: Colors.white.withOpacity(0.8),
+                            Container(
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 10, vertical: 4),
+                              decoration: BoxDecoration(
+                                color: Colors.white.withOpacity(0.2),
+                                borderRadius: BorderRadius.circular(20),
+                              ),
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Icon(
+                                    Icons.location_on_rounded,
+                                    color: Colors.white,
+                                    size: 14,
                                   ),
-                                ),
-                              ],
+                                  const SizedBox(width: 4),
+                                  Text(
+                                    _location!,
+                                    style: theme.bodySmall.override(
+                                      font: GoogleFonts.inter(
+                                          fontWeight: FontWeight.w500),
+                                      color: Colors.white,
+                                    ),
+                                  ),
+                                ],
+                              ),
                             ),
                             const SizedBox(height: 8),
                           ],
@@ -2773,36 +3192,42 @@ class _ProfileWidgetState extends State<ProfileWidget>
                               'Member since ${_formatJoinDate(_joinDate!)}',
                               style: theme.bodySmall.override(
                                 font: GoogleFonts.inter(),
-                                color: Colors.white.withOpacity(0.7),
+                                color: Colors.white.withOpacity(0.75),
                               ),
                             ),
                           ],
                         ],
                       ),
                     ),
-                    _buildEditButton(context),
-                    const SizedBox(width: 8),
-                    Material(
-                      color: Colors.white.withOpacity(0.2),
-                      borderRadius: BorderRadius.circular(20),
-                      child: InkWell(
-                        borderRadius: BorderRadius.circular(20),
-                        onTap: () => scaffoldKey.currentState?.openEndDrawer(),
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 12, vertical: 10),
-                          child: const Icon(
-                            Icons.settings_rounded,
-                            color: Colors.white,
-                            size: 18,
-                          ),
+                    Column(
+                      children: [
+                        _buildHeaderActionButton(
+                          context,
+                          icon: _isEditing
+                              ? Icons.check_rounded
+                              : Icons.edit_rounded,
+                          label: _isEditing ? 'Done' : 'Edit',
+                          onTap: () async {
+                            await Haptics.vibrate(HapticsType.selection);
+                            setState(() => _isEditing = !_isEditing);
+                            if (_isEditing) {
+                              _showEditProfileSheet(context);
+                            }
+                          },
                         ),
-                      ),
+                        const SizedBox(height: 8),
+                        _buildHeaderActionButton(
+                          context,
+                          icon: Icons.settings_rounded,
+                          onTap: () =>
+                              scaffoldKey.currentState?.openEndDrawer(),
+                        ),
+                      ],
                     ),
                   ],
                 ),
                 if (_bio != null && _bio!.isNotEmpty) ...[
-                  const SizedBox(height: 16),
+                  const SizedBox(height: 20),
                   Container(
                     width: double.infinity,
                     padding: const EdgeInsets.all(16),
@@ -2819,7 +3244,7 @@ class _ProfileWidgetState extends State<ProfileWidget>
                       style: theme.bodyMedium.override(
                         font: GoogleFonts.inter(),
                         color: Colors.white,
-                        lineHeight: 1.4,
+                        lineHeight: 1.5,
                       ),
                     ),
                   ),
@@ -2828,6 +3253,45 @@ class _ProfileWidgetState extends State<ProfileWidget>
             ),
           ),
         ],
+      ),
+    ).animate().fadeIn(duration: 500.ms).slideY(begin: -0.1, end: 0);
+  }
+
+  Widget _buildHeaderActionButton(
+    BuildContext context, {
+    required IconData icon,
+    String? label,
+    required VoidCallback onTap,
+  }) {
+    return Material(
+      color: Colors.white.withOpacity(0.2),
+      borderRadius: BorderRadius.circular(16),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(16),
+        onTap: onTap,
+        child: Container(
+          padding: EdgeInsets.symmetric(
+            horizontal: label != null ? 14 : 12,
+            vertical: 10,
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(icon, color: Colors.white, size: 18),
+              if (label != null) ...[
+                const SizedBox(width: 6),
+                Text(
+                  label,
+                  style: GoogleFonts.inter(
+                    color: Colors.white,
+                    fontWeight: FontWeight.w600,
+                    fontSize: 13,
+                  ),
+                ),
+              ],
+            ],
+          ),
+        ),
       ),
     );
   }
@@ -2952,19 +3416,28 @@ class _ProfileWidgetState extends State<ProfileWidget>
 
   Widget _buildStats(BuildContext context) {
     final theme = FlutterFlowTheme.of(context);
+    final isDark = Theme.of(context).brightness == Brightness.dark;
 
     return Container(
       margin: const EdgeInsets.fromLTRB(16, 16, 16, 0),
       padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
-        color: theme.secondaryBackground,
-        borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: theme.alternate.withOpacity(0.3)),
+        gradient: LinearGradient(
+          colors: isDark
+              ? [const Color(0xFF1E1E2E), const Color(0xFF252538)]
+              : [Colors.white, const Color(0xFFFAFAFF)],
+        ),
+        borderRadius: BorderRadius.circular(24),
+        border: Border.all(
+          color: isDark
+              ? Colors.white.withOpacity(0.1)
+              : Colors.black.withOpacity(0.05),
+        ),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(0.05),
-            blurRadius: 10.0,
-            offset: const Offset(0, 4),
+            color: Colors.black.withOpacity(isDark ? 0.2 : 0.06),
+            blurRadius: 16.0,
+            offset: const Offset(0, 6),
           ),
         ],
       ),
@@ -2976,13 +3449,23 @@ class _ProfileWidgetState extends State<ProfileWidget>
               icon: Icons.event_rounded,
               value: _totalEvents.toString(),
               label: 'Events',
-              color: theme.primary,
+              gradient: [const Color(0xFF6366F1), const Color(0xFF8B5CF6)],
             ),
           ),
           Container(
             width: 1,
-            height: 40,
-            color: theme.alternate.withOpacity(0.3),
+            height: 50,
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                begin: Alignment.topCenter,
+                end: Alignment.bottomCenter,
+                colors: [
+                  theme.alternate.withOpacity(0),
+                  theme.alternate.withOpacity(0.5),
+                  theme.alternate.withOpacity(0),
+                ],
+              ),
+            ),
           ),
           Expanded(
             child: _buildStatItem(
@@ -2990,13 +3473,23 @@ class _ProfileWidgetState extends State<ProfileWidget>
               icon: Icons.people_rounded,
               value: _followersCount.toString(),
               label: 'Followers',
-              color: Colors.teal,
+              gradient: [const Color(0xFF10B981), const Color(0xFF059669)],
             ),
           ),
           Container(
             width: 1,
-            height: 40,
-            color: theme.alternate.withOpacity(0.3),
+            height: 50,
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                begin: Alignment.topCenter,
+                end: Alignment.bottomCenter,
+                colors: [
+                  theme.alternate.withOpacity(0),
+                  theme.alternate.withOpacity(0.5),
+                  theme.alternate.withOpacity(0),
+                ],
+              ),
+            ),
           ),
           Expanded(
             child: _buildStatItem(
@@ -3004,13 +3497,23 @@ class _ProfileWidgetState extends State<ProfileWidget>
               icon: Icons.person_add_rounded,
               value: _followingCount.toString(),
               label: 'Following',
-              color: Colors.indigo,
+              gradient: [const Color(0xFF3B82F6), const Color(0xFF1D4ED8)],
             ),
           ),
           Container(
             width: 1,
-            height: 40,
-            color: theme.alternate.withOpacity(0.3),
+            height: 50,
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                begin: Alignment.topCenter,
+                end: Alignment.bottomCenter,
+                colors: [
+                  theme.alternate.withOpacity(0),
+                  theme.alternate.withOpacity(0.5),
+                  theme.alternate.withOpacity(0),
+                ],
+              ),
+            ),
           ),
           Expanded(
             child: _buildStatItem(
@@ -3018,12 +3521,15 @@ class _ProfileWidgetState extends State<ProfileWidget>
               icon: Icons.post_add_rounded,
               value: _totalPosts.toString(),
               label: 'Posts',
-              color: Colors.orange,
+              gradient: [const Color(0xFFF59E0B), const Color(0xFFD97706)],
             ),
           ),
         ],
       ),
-    );
+    )
+        .animate()
+        .fadeIn(duration: 500.ms, delay: 100.ms)
+        .slideY(begin: 0.1, end: 0);
   }
 
   Widget _buildStatItem(
@@ -3031,7 +3537,7 @@ class _ProfileWidgetState extends State<ProfileWidget>
     required IconData icon,
     required String value,
     required String label,
-    required Color color,
+    required List<Color> gradient,
   }) {
     final theme = FlutterFlowTheme.of(context);
 
@@ -3041,25 +3547,32 @@ class _ProfileWidgetState extends State<ProfileWidget>
           width: 48,
           height: 48,
           decoration: BoxDecoration(
-            color: color.withOpacity(0.1),
-            borderRadius: BorderRadius.circular(16),
+            gradient: LinearGradient(
+              colors: [
+                gradient.first.withOpacity(0.15),
+                gradient.last.withOpacity(0.1)
+              ],
+            ),
+            borderRadius: BorderRadius.circular(14),
           ),
-          child: Icon(icon, color: color, size: 24),
+          child: Icon(icon, color: gradient.first, size: 24),
         ),
-        const SizedBox(height: 8),
+        const SizedBox(height: 10),
         Text(
           value,
           style: theme.titleMedium.override(
             font: GoogleFonts.interTight(fontWeight: FontWeight.w700),
-            fontSize: 20,
+            fontSize: 22,
+            letterSpacing: -0.5,
           ),
         ),
         const SizedBox(height: 2),
         Text(
           label,
-          style: theme.bodySmall.override(
-            font: GoogleFonts.inter(),
+          style: theme.labelSmall.override(
+            font: GoogleFonts.inter(fontWeight: FontWeight.w500),
             color: theme.secondaryText,
+            letterSpacing: 0.2,
           ),
         ),
       ],

@@ -6,12 +6,16 @@ import '/flutter_flow/flutter_flow_icon_button.dart';
 import '/pages/messaging/live_group_chat_page.dart';
 import '/pages/edit_pulse/edit_pulse_widget.dart';
 import '/pages/highlights/video_capture_page.dart';
+import '/pages/pulse_management/pulse_management_page.dart';
+import '/widgets/moderation/report_content_dialog.dart';
 import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart' as gmaps;
 import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
+import 'package:flutter_animate/flutter_animate.dart';
+import 'package:google_fonts/google_fonts.dart';
 import 'pulse_detail_model.dart';
 export 'pulse_detail_model.dart';
 
@@ -549,6 +553,60 @@ class _PulseDetailPageState extends State<PulseDetailPage>
             // TODO: Implement share functionality
           },
         ),
+        // Report pulse button for non-authors
+        if (!_model.isAuthor) ...[
+          const SizedBox(width: 8),
+          FlutterFlowIconButton(
+            borderColor: Colors.transparent,
+            borderRadius: 30,
+            borderWidth: 1,
+            buttonSize: 44,
+            fillColor: Colors.black.withOpacity(0.6),
+            icon: Icon(
+              Icons.flag_outlined,
+              color: Colors.white,
+              size: 24,
+            ),
+            onPressed: () async {
+              final reported = await ReportContentDialog.show(
+                context,
+                contentType: 'pulse',
+                reportedPulseId: widget.pulseId,
+              );
+              if (reported == true && mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                      content:
+                          Text('Pulse reported. We\'ll review it shortly.')),
+                );
+              }
+            },
+          ),
+        ],
+        // Admin/Author management quick access
+        if (_model.isAuthor) ...[
+          const SizedBox(width: 8),
+          FlutterFlowIconButton(
+            borderColor: Colors.transparent,
+            borderRadius: 30,
+            borderWidth: 1,
+            buttonSize: 44,
+            fillColor: Colors.black.withOpacity(0.6),
+            icon: Icon(
+              Icons.admin_panel_settings,
+              color: Colors.white,
+              size: 24,
+            ),
+            onPressed: () async {
+              await context.pushNamed(
+                PulseManagementPage.routeName,
+                pathParameters: {'id': widget.pulseId},
+                extra: {'pulseName': _model.title},
+              );
+              _loadPulseDetails();
+            },
+          ),
+        ],
         const SizedBox(width: 12),
       ],
       flexibleSpace: FlexibleSpaceBar(
@@ -1190,136 +1248,117 @@ class _PulseDetailPageState extends State<PulseDetailPage>
   }
 
   Widget _buildActionButton(FlutterFlowTheme theme) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+
     if (_model.isAuthor) {
-      return FFButtonWidget(
-        onPressed: () {
-          final current = _model.pulseData ?? {};
-          context.pushNamed(
-            EditPulseWidget.routeName,
-            pathParameters: {'id': widget.pulseId},
-            extra: {'pulse': current},
-          ).then((value) {
-            if (value is Map<String, dynamic>) {
-              _model.setPulseData(value);
-              setState(() {});
-            } else {
-              // Optionally reload from backend if we got no result
-              _loadPulseDetails();
-            }
-          });
-        },
-        text: 'Edit Pulse',
-        icon: Icon(
-          Icons.edit,
-          size: 20,
-        ),
-        options: FFButtonOptions(
-          width: double.infinity,
-          height: 54,
-          padding: const EdgeInsetsDirectional.fromSTEB(0, 0, 0, 0),
-          iconPadding: const EdgeInsetsDirectional.fromSTEB(0, 0, 0, 0),
-          color: theme.secondary,
-          textStyle: theme.titleMedium.copyWith(
-            color: Colors.white,
-            fontWeight: FontWeight.w600,
+      return Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          // Author action buttons row
+          Row(
+            children: [
+              // Edit Button
+              Expanded(
+                child: _buildModernActionButton(
+                  label: 'Edit',
+                  icon: Icons.edit_rounded,
+                  gradient: [const Color(0xFF3B82F6), const Color(0xFF1D4ED8)],
+                  onPressed: () {
+                    HapticFeedback.lightImpact();
+                    final current = _model.pulseData ?? {};
+                    context.pushNamed(
+                      EditPulseWidget.routeName,
+                      pathParameters: {'id': widget.pulseId},
+                      extra: {'pulse': current},
+                    ).then((value) {
+                      if (value is Map<String, dynamic>) {
+                        _model.setPulseData(value);
+                        setState(() {});
+                      } else {
+                        _loadPulseDetails();
+                      }
+                    });
+                  },
+                ),
+              ),
+              const SizedBox(width: 10),
+              // Manage Button
+              Expanded(
+                child: _buildModernActionButton(
+                  label: 'Manage',
+                  icon: Icons.settings_rounded,
+                  gradient: [const Color(0xFF6366F1), const Color(0xFF8B5CF6)],
+                  onPressed: () async {
+                    HapticFeedback.lightImpact();
+                    await context.pushNamed(
+                      PulseManagementPage.routeName,
+                      pathParameters: {'id': widget.pulseId},
+                      extra: {'pulseName': _model.title},
+                    );
+                    _loadPulseDetails();
+                  },
+                ),
+              ),
+              const SizedBox(width: 10),
+              // Group Chat Button
+              Expanded(
+                child: _buildModernActionButton(
+                  label: 'Chat',
+                  icon: Icons.chat_bubble_rounded,
+                  gradient: [const Color(0xFF10B981), const Color(0xFF059669)],
+                  onPressed: () {
+                    HapticFeedback.lightImpact();
+                    _openGroupChat();
+                  },
+                ),
+              ),
+            ],
           ),
-          elevation: 3,
-          borderSide: const BorderSide(
-            color: Colors.transparent,
-            width: 1,
-          ),
-          borderRadius: BorderRadius.circular(27),
-        ),
+        ],
       );
     } else if (_model.isParticipant) {
       return Row(
         children: [
           // Group Chat Button
           Expanded(
-            child: FFButtonWidget(
-              onPressed: _openGroupChat,
-              text: 'Group Chat',
-              icon: Icon(
-                Icons.group_rounded,
-                size: 20,
-              ),
-              options: FFButtonOptions(
-                height: 54,
-                padding: const EdgeInsetsDirectional.fromSTEB(0, 0, 0, 0),
-                iconPadding: const EdgeInsetsDirectional.fromSTEB(0, 0, 0, 0),
-                color: theme.primary,
-                textStyle: theme.titleMedium.copyWith(
-                  color: Colors.white,
-                  fontWeight: FontWeight.w600,
-                ),
-                elevation: 3,
-                borderSide: const BorderSide(
-                  color: Colors.transparent,
-                  width: 1,
-                ),
-                borderRadius: BorderRadius.circular(27),
-              ),
+            flex: 2,
+            child: _buildModernActionButton(
+              label: 'Group Chat',
+              icon: Icons.group_rounded,
+              gradient: [const Color(0xFF6366F1), const Color(0xFF8B5CF6)],
+              onPressed: () {
+                HapticFeedback.lightImpact();
+                _openGroupChat();
+              },
             ),
           ),
           const SizedBox(width: 12),
           // Leave Button
           Expanded(
-            child: FFButtonWidget(
-              onPressed: _model.isLeaving ? null : _leavePulse,
-              text: _model.isLeaving ? 'Leaving...' : 'Leave',
-              icon: Icon(
-                Icons.exit_to_app,
-                size: 20,
-              ),
-              options: FFButtonOptions(
-                height: 54,
-                padding: const EdgeInsetsDirectional.fromSTEB(0, 0, 0, 0),
-                iconPadding: const EdgeInsetsDirectional.fromSTEB(0, 0, 0, 0),
-                color: theme.error,
-                textStyle: theme.titleMedium.copyWith(
-                  color: Colors.white,
-                  fontWeight: FontWeight.w600,
-                ),
-                elevation: 3,
-                borderSide: const BorderSide(
-                  color: Colors.transparent,
-                  width: 1,
-                ),
-                borderRadius: BorderRadius.circular(27),
-                disabledColor: theme.error.withOpacity(0.6),
-                disabledTextColor: Colors.white70,
-              ),
+            child: _buildModernActionButton(
+              label: _model.isLeaving ? 'Leaving...' : 'Leave',
+              icon: Icons.exit_to_app_rounded,
+              gradient: [const Color(0xFFEF4444), const Color(0xFFDC2626)],
+              isDisabled: _model.isLeaving,
+              onPressed: () {
+                HapticFeedback.lightImpact();
+                _leavePulse();
+              },
             ),
           ),
         ],
       );
     } else if (_model.canJoin) {
-      return FFButtonWidget(
-        onPressed: _model.isJoining ? null : _joinPulse,
-        text: _model.isJoining ? 'Joining...' : 'Join Pulse',
-        icon: Icon(
-          Icons.add,
-          size: 20,
-        ),
-        options: FFButtonOptions(
-          width: double.infinity,
-          height: 54,
-          padding: const EdgeInsetsDirectional.fromSTEB(0, 0, 0, 0),
-          iconPadding: const EdgeInsetsDirectional.fromSTEB(0, 0, 0, 0),
-          color: theme.primary,
-          textStyle: theme.titleMedium.copyWith(
-            color: Colors.white,
-            fontWeight: FontWeight.w600,
-          ),
-          elevation: 3,
-          borderSide: const BorderSide(
-            color: Colors.transparent,
-            width: 1,
-          ),
-          borderRadius: BorderRadius.circular(27),
-          disabledColor: theme.primary.withOpacity(0.6),
-          disabledTextColor: Colors.white70,
-        ),
+      return _buildModernActionButton(
+        label: _model.isJoining ? 'Joining...' : 'Join Pulse',
+        icon: Icons.add_rounded,
+        gradient: [const Color(0xFF6366F1), const Color(0xFF8B5CF6)],
+        isDisabled: _model.isJoining,
+        isFullWidth: true,
+        onPressed: () {
+          HapticFeedback.mediumImpact();
+          _joinPulse();
+        },
       );
     } else {
       String buttonText = 'Cannot Join';
@@ -1329,31 +1368,100 @@ class _PulseDetailPageState extends State<PulseDetailPage>
         buttonText = 'Private Event';
       }
 
-      return FFButtonWidget(
-        onPressed: null,
-        text: buttonText,
-        icon: Icon(
-          Icons.block,
-          size: 20,
+      return Container(
+        width: double.infinity,
+        height: 56,
+        decoration: BoxDecoration(
+          color: isDark
+              ? Colors.white.withOpacity(0.1)
+              : Colors.black.withOpacity(0.05),
+          borderRadius: BorderRadius.circular(28),
+          border: Border.all(
+            color: isDark
+                ? Colors.white.withOpacity(0.1)
+                : Colors.black.withOpacity(0.1),
+          ),
         ),
-        options: FFButtonOptions(
-          width: double.infinity,
-          height: 54,
-          padding: const EdgeInsetsDirectional.fromSTEB(0, 0, 0, 0),
-          iconPadding: const EdgeInsetsDirectional.fromSTEB(0, 0, 0, 0),
-          color: theme.secondaryText.withOpacity(0.3),
-          textStyle: theme.titleMedium.copyWith(
-            color: theme.secondaryText,
-            fontWeight: FontWeight.w600,
-          ),
-          elevation: 0,
-          borderSide: BorderSide(
-            color: theme.secondaryText.withOpacity(0.3),
-            width: 1,
-          ),
-          borderRadius: BorderRadius.circular(27),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(
+              Icons.block_rounded,
+              color: theme.secondaryText,
+              size: 20,
+            ),
+            const SizedBox(width: 8),
+            Text(
+              buttonText,
+              style: GoogleFonts.inter(
+                color: theme.secondaryText,
+                fontWeight: FontWeight.w600,
+                fontSize: 16,
+              ),
+            ),
+          ],
         ),
       );
     }
+  }
+
+  Widget _buildModernActionButton({
+    required String label,
+    required IconData icon,
+    required List<Color> gradient,
+    required VoidCallback onPressed,
+    bool isDisabled = false,
+    bool isFullWidth = false,
+  }) {
+    return Container(
+      width: isFullWidth ? double.infinity : null,
+      height: 56,
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          colors: isDisabled
+              ? [
+                  gradient.first.withOpacity(0.5),
+                  gradient.last.withOpacity(0.5)
+                ]
+              : gradient,
+        ),
+        borderRadius: BorderRadius.circular(28),
+        boxShadow: isDisabled
+            ? []
+            : [
+                BoxShadow(
+                  color: gradient.first.withOpacity(0.4),
+                  blurRadius: 16,
+                  offset: const Offset(0, 6),
+                ),
+              ],
+      ),
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          borderRadius: BorderRadius.circular(28),
+          onTap: isDisabled ? null : onPressed,
+          child: Center(
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(icon, color: Colors.white, size: 20),
+                const SizedBox(width: 8),
+                Text(
+                  label,
+                  style: GoogleFonts.inter(
+                    color: Colors.white,
+                    fontWeight: FontWeight.w600,
+                    fontSize: 15,
+                    letterSpacing: -0.2,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
   }
 }

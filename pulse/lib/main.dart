@@ -13,6 +13,8 @@ import 'flutter_flow/flutter_flow_util.dart';
 import 'flutter_flow/nav/nav.dart';
 import 'backend/webrtc_call_service.dart';
 import 'pages/calling/call_screen.dart';
+import 'components/modern_bottom_sheets.dart';
+import 'utils/haptic_utils.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -47,6 +49,8 @@ class MyAppScrollBehavior extends MaterialScrollBehavior {
 class _MyAppState extends State<MyApp> {
   ThemeMode _themeMode = FlutterFlowTheme.themeMode;
 
+  ThemeMode get themeMode => _themeMode;
+
   late AppStateNotifier _appStateNotifier;
   late GoRouter _router;
   String getRoute([RouteMatch? routeMatch]) {
@@ -79,21 +83,123 @@ class _MyAppState extends State<MyApp> {
     WebRTCCallService.instance.attachSocketListeners();
     WebRTCCallService.instance.onIncomingCall.listen((incoming) async {
       if (!mounted) return;
+      await HapticUtils.heavy();
+
+      final ctx = appNavigatorKey.currentContext ?? context;
+      final theme = FlutterFlowTheme.of(ctx);
+
       final accept = await showDialog<bool>(
-        context: appNavigatorKey.currentContext ?? context,
-        builder: (ctx) {
-          return AlertDialog(
-            title: Text(
-                incoming.isVideo ? 'Incoming video call' : 'Incoming call'),
-            content: const Text('Do you want to accept?'),
-            actions: [
-              TextButton(
-                  onPressed: () => Navigator.of(ctx).pop(false),
-                  child: const Text('Decline')),
-              ElevatedButton(
-                  onPressed: () => Navigator.of(ctx).pop(true),
-                  child: const Text('Accept')),
-            ],
+        context: ctx,
+        barrierDismissible: false,
+        builder: (dialogCtx) {
+          return Dialog(
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(28),
+            ),
+            child: Container(
+              padding: const EdgeInsets.all(24),
+              decoration: BoxDecoration(
+                color: theme.secondaryBackground,
+                borderRadius: BorderRadius.circular(28),
+              ),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  // Animated call icon
+                  TweenAnimationBuilder<double>(
+                    tween: Tween(begin: 0.8, end: 1.0),
+                    duration: const Duration(milliseconds: 600),
+                    curve: Curves.elasticOut,
+                    builder: (context, scale, child) {
+                      return Transform.scale(
+                        scale: scale,
+                        child: Container(
+                          width: 80,
+                          height: 80,
+                          decoration: BoxDecoration(
+                            color: theme.primary.withOpacity(0.1),
+                            shape: BoxShape.circle,
+                          ),
+                          child: Icon(
+                            incoming.isVideo ? Icons.videocam : Icons.phone,
+                            size: 40,
+                            color: theme.primary,
+                          ),
+                        ),
+                      );
+                    },
+                  ),
+                  const SizedBox(height: 24),
+
+                  // Title
+                  Text(
+                    incoming.isVideo ? 'Incoming Video Call' : 'Incoming Call',
+                    style: theme.headlineSmall.copyWith(
+                      fontWeight: FontWeight.bold,
+                    ),
+                    textAlign: TextAlign.center,
+                  ),
+                  const SizedBox(height: 8),
+
+                  // Subtitle
+                  Text(
+                    'Would you like to answer?',
+                    style: theme.bodyMedium.copyWith(
+                      color: theme.secondaryText,
+                    ),
+                    textAlign: TextAlign.center,
+                  ),
+                  const SizedBox(height: 32),
+
+                  // Action buttons
+                  Row(
+                    children: [
+                      Expanded(
+                        child: ElevatedButton.icon(
+                          onPressed: () async {
+                            await HapticUtils.light();
+                            Navigator.of(dialogCtx).pop(false);
+                          },
+                          icon: const Icon(Icons.close),
+                          label: const Text('Decline'),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: theme.error,
+                            foregroundColor: Colors.white,
+                            padding: const EdgeInsets.symmetric(vertical: 14),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                            elevation: 0,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: ElevatedButton.icon(
+                          onPressed: () async {
+                            await HapticUtils.medium();
+                            Navigator.of(dialogCtx).pop(true);
+                          },
+                          icon: Icon(
+                            incoming.isVideo ? Icons.videocam : Icons.phone,
+                          ),
+                          label: const Text('Accept'),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: theme.success,
+                            foregroundColor: Colors.white,
+                            padding: const EdgeInsets.symmetric(vertical: 14),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                            elevation: 0,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
           );
         },
       );

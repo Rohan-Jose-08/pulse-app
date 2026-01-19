@@ -6,13 +6,18 @@ import profileRoute from './routes/profile';
 import { PrismaClient } from '@prisma/client';
 import postsRoute from './routes/posts';
 import messagesRoute from './routes/messages';
+import pulsesRoute from './routes/pulses';
+import pulsesUpdatedRoute from './routes/pulses_updated';
 import pulseInvitationsRoute from './routes/pulse_invitations';
+import pulseAdminRoute from './routes/pulse_admin';
 import invitationsRoute from './routes/invitations';
 import settingsRoute from './routes/settings';
 import activityRoute from './routes/activity';
 import highlightsRoute from './routes/highlights';
 import recommendationsRoute from './routes/recommendations';
 import mlAnalyticsRoute from './routes/ml_analytics';
+import moderationRoute from './routes/moderation';
+import adminModerationRoute from './routes/admin_moderation';
 import admin from './firebase';
 import http from 'http';
 import { userSockets, getIo, setIo, setUserOnline, setUserOffline, getUserActivity, getOnlineUsers } from './realtime';
@@ -46,7 +51,7 @@ declare global {
 // Mount the auth routes directly without applying global authentication middleware
 const authLimiter = createRateLimiter({
   windowMs: 60_000,
-  max: 20,
+  max: 100, // Increased for development
   message: 'Too many auth attempts; please retry shortly',
   keyGenerator: (req) => `${req.ip}:auth`,
 });
@@ -60,6 +65,13 @@ app.use('/api/posts', postsRoute);
 
 // Messaging routes (REST helpers for conversations/messages)
 app.use('/api', messagesRoute);
+
+// Main pulses routes (ML recommendations, search, CRUD - must come before pulse invitations)
+app.use('/api/pulses', pulsesRoute);
+app.use('/api/pulses', pulsesUpdatedRoute);
+
+// Pulse admin routes (member management, roles, settings)
+app.use('/api/pulses', pulseAdminRoute);
 
 // Pulse invitations routes (legacy, specific to pulses)
 app.use('/api/pulses', pulseInvitationsRoute);
@@ -81,6 +93,12 @@ app.use('/api/recommendations', recommendationsRoute);
 
 // ML Analytics routes (admin)
 app.use('/api/ml-analytics', mlAnalyticsRoute);
+
+// Moderation routes (user-facing)
+app.use('/api/moderation', moderationRoute);
+
+// Admin moderation routes
+app.use('/api/admin/moderation', adminModerationRoute);
 
 // --- Notifications REST endpoints ---
 // List notifications for the authenticated user (paged)
@@ -1610,6 +1628,7 @@ app.post('/api/pulses/:id/chat/messages', authenticateUser, async (req, res) => 
 });
 
 const PORT = process.env.PORT || 3000;
+const PORT_NUMBER = typeof PORT === 'string' ? parseInt(PORT, 10) : PORT;
 const server = http.createServer(app);
 
 // Socket.IO setup with CORS for dev
@@ -1874,6 +1893,7 @@ io.on('connection', (socket: any) => {
             select: {
               id: true,
               displayName: true,
+              email: true,
               profileImageUrl: true,
             }
           },
@@ -1888,6 +1908,7 @@ io.on('connection', (socket: any) => {
                 select: {
                   id: true,
                   displayName: true,
+                  email: true,
                 }
               }
             }
@@ -1941,7 +1962,7 @@ io.on('connection', (socket: any) => {
         id: msg.id,
         conversationId: msg.conversationId,
         senderId: msg.senderId,
-        senderName: (msg as any).sender?.displayName || null,
+        senderName: (msg as any).sender?.displayName || (msg as any).sender?.email?.split('@')[0] || null,
         senderPhotoUrl: (msg as any).sender?.profileImageUrl || null,
         text: msg.text,
         imageUrl: msg.imageUrl,
@@ -1955,7 +1976,7 @@ io.on('connection', (socket: any) => {
           imageUrl: (msg as any).repliedTo.imageUrl,
           videoUrl: (msg as any).repliedTo.videoUrl,
           senderId: (msg as any).repliedTo.senderId,
-          senderName: (msg as any).repliedTo.sender?.displayName || 'Unknown',
+          senderName: (msg as any).repliedTo.sender?.displayName || (msg as any).repliedTo.sender?.email?.split('@')[0] || 'Unknown',
         } : null,
       });
       try { console.log('[socket] message:new emitted to room', { conversationId }); } catch (_) {}
@@ -2421,7 +2442,9 @@ io.on('connection', (socket: any) => {
 
 // Only start server if not running inside a test environment
 if (process.env.JEST_WORKER_ID === undefined) {
-  server.listen(PORT, () => {
-    console.log(`Server running on http://localhost:${PORT}`);
+  const HOST = '0.0.0.0'; // Listen on all network interfaces
+  server.listen(PORT_NUMBER, HOST, () => {
+    console.log(`Server running on http://localhost:${PORT_NUMBER}`);
+    console.log(`Server accessible from emulator at http://10.0.2.2:${PORT_NUMBER}`);
   });
 }

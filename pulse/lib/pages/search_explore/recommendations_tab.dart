@@ -1,17 +1,35 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_staggered_grid_view/flutter_staggered_grid_view.dart';
+import 'package:geolocator/geolocator.dart';
 import '../../flutter_flow/flutter_flow_theme.dart';
 import '../../backend/api_service.dart';
+import '../../services/ml_recommendation_service.dart';
 import '../pulse_detail/pulse_detail_page.dart';
 import 'search_explore_providers.dart';
+import '../../widgets/ml_insights_dashboard.dart';
 
 /// Provider for ML-powered personalized recommendations
 final personalizedRecommendationsProvider =
     FutureProvider.autoDispose<List<ExplorePulse>>((ref) async {
   try {
-    final apiService = ApiService.instance;
-    final recommendations = await apiService.getPersonalizedPulses();
+    final mlService = MLRecommendationService.instance;
+
+    // Try to get user's location for better recommendations
+    Position? position;
+    try {
+      position = await Geolocator.getCurrentPosition(
+        desiredAccuracy: LocationAccuracy.medium,
+        timeLimit: const Duration(seconds: 5),
+      );
+    } catch (e) {
+      print('Could not get location for recommendations: $e');
+    }
+
+    final recommendations = await mlService.getPersonalizedRecommendations(
+      latitude: position?.latitude,
+      longitude: position?.longitude,
+    );
 
     if (recommendations.isEmpty) {
       return [];
@@ -27,17 +45,40 @@ final personalizedRecommendationsProvider =
   }
 });
 
-class RecommendationsTab extends ConsumerWidget {
+class RecommendationsTab extends ConsumerStatefulWidget {
   const RecommendationsTab({super.key});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<RecommendationsTab> createState() => _RecommendationsTabState();
+}
+
+class _RecommendationsTabState extends ConsumerState<RecommendationsTab> {
+  bool _showInsights = false;
+
+  @override
+  Widget build(BuildContext context) {
     final theme = FlutterFlowTheme.of(context);
     final recommendations = ref.watch(personalizedRecommendationsProvider);
+
+    if (_showInsights) {
+      return Scaffold(
+        appBar: AppBar(
+          backgroundColor: theme.primaryBackground,
+          title: Text('ML Insights', style: theme.headlineSmall),
+          leading: IconButton(
+            icon: Icon(Icons.arrow_back, color: theme.primaryText),
+            onPressed: () => setState(() => _showInsights = false),
+          ),
+        ),
+        body: const MLInsightsDashboard(),
+      );
+    }
 
     return RefreshIndicator(
       onRefresh: () async {
         ref.invalidate(personalizedRecommendationsProvider);
+        // Also clear ML cache to get fresh data
+        MLRecommendationService.instance.clearCache();
       },
       color: theme.primary,
       backgroundColor: theme.secondaryBackground,
@@ -62,20 +103,33 @@ class RecommendationsTab extends ConsumerWidget {
                           Icon(Icons.auto_awesome,
                               color: theme.primary, size: 24),
                           const SizedBox(width: 8),
-                          Text(
-                            'For You',
-                            style: theme.headlineSmall?.copyWith(
-                              fontWeight: FontWeight.bold,
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  'For You',
+                                  style: theme.headlineSmall?.copyWith(
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                ),
+                                Text(
+                                  'Personalized pulse recommendations based on your interests',
+                                  style: theme.bodySmall?.copyWith(
+                                    color: theme.secondaryText,
+                                  ),
+                                ),
+                              ],
                             ),
                           ),
+                          IconButton(
+                            icon: Icon(Icons.insights, color: theme.primary),
+                            onPressed: () {
+                              setState(() => _showInsights = true);
+                            },
+                            tooltip: 'View ML Insights',
+                          ),
                         ],
-                      ),
-                      const SizedBox(height: 4),
-                      Text(
-                        'Personalized pulse recommendations based on your interests',
-                        style: theme.bodySmall?.copyWith(
-                          color: theme.secondaryText,
-                        ),
                       ),
                     ],
                   ),
@@ -94,9 +148,8 @@ class RecommendationsTab extends ConsumerWidget {
                     return _RecommendationCard(
                       pulse: pulse,
                       onTap: () async {
-                        // Track recommendation click
-                        await ApiService.instance
-                            .trackRecommendationClick(pulse.id);
+                        // Track recommendation click using ML service
+                        await pulse.id.trackRecommendationClick();
 
                         // Navigate to pulse detail
                         if (context.mounted) {
@@ -138,7 +191,7 @@ class RecommendationsTab extends ConsumerWidget {
   }
 }
 
-class _RecommendationCard extends StatelessWidget {
+class _RecommendationCard extends StatefulWidget {
   const _RecommendationCard({
     required this.pulse,
     required this.onTap,
@@ -148,11 +201,16 @@ class _RecommendationCard extends StatelessWidget {
   final VoidCallback onTap;
 
   @override
+  State<_RecommendationCard> createState() => _RecommendationCardState();
+}
+
+class _RecommendationCardState extends State<_RecommendationCard> {
+  @override
   Widget build(BuildContext context) {
     final theme = FlutterFlowTheme.of(context);
 
     return GestureDetector(
-      onTap: onTap,
+      onTap: widget.onTap,
       child: Container(
         decoration: BoxDecoration(
           color: theme.secondaryBackground,
@@ -177,9 +235,9 @@ class _RecommendationCard extends StatelessWidget {
                 child: Stack(
                   fit: StackFit.expand,
                   children: [
-                    pulse.imageUrl.isNotEmpty
+                    widget.pulse.imageUrl.isNotEmpty
                         ? Image.network(
-                            pulse.imageUrl,
+                            widget.pulse.imageUrl,
                             fit: BoxFit.cover,
                             errorBuilder: (_, __, ___) => Container(
                               color: theme.alternate,
@@ -233,7 +291,7 @@ class _RecommendationCard extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    pulse.title,
+                    widget.pulse.title,
                     style: theme.bodyLarge?.copyWith(
                       fontWeight: FontWeight.w600,
                     ),
@@ -248,7 +306,7 @@ class _RecommendationCard extends StatelessWidget {
                       const SizedBox(width: 4),
                       Expanded(
                         child: Text(
-                          pulse.hostUsername,
+                          widget.pulse.hostUsername,
                           style: theme.bodySmall
                               ?.copyWith(color: theme.secondaryText),
                           maxLines: 1,
@@ -257,7 +315,7 @@ class _RecommendationCard extends StatelessWidget {
                       ),
                     ],
                   ),
-                  if (pulse.location.isNotEmpty) ...[
+                  if (widget.pulse.location.isNotEmpty) ...[
                     const SizedBox(height: 4),
                     Row(
                       children: [
@@ -266,7 +324,7 @@ class _RecommendationCard extends StatelessWidget {
                         const SizedBox(width: 4),
                         Expanded(
                           child: Text(
-                            pulse.location,
+                            widget.pulse.location,
                             style: theme.bodySmall
                                 ?.copyWith(color: theme.secondaryText),
                             maxLines: 1,
@@ -276,7 +334,7 @@ class _RecommendationCard extends StatelessWidget {
                       ],
                     ),
                   ],
-                  if (pulse.time != null) ...[
+                  if (widget.pulse.time != null) ...[
                     const SizedBox(height: 4),
                     Row(
                       children: [
@@ -284,21 +342,21 @@ class _RecommendationCard extends StatelessWidget {
                             size: 14, color: theme.secondaryText),
                         const SizedBox(width: 4),
                         Text(
-                          _formatTime(pulse.time!),
+                          _formatTime(widget.pulse.time!),
                           style: theme.bodySmall
                               ?.copyWith(color: theme.secondaryText),
                         ),
                       ],
                     ),
                   ],
-                  if (pulse.distanceKm != null) ...[
+                  if (widget.pulse.distanceKm != null) ...[
                     const SizedBox(height: 4),
                     Row(
                       children: [
                         Icon(Icons.near_me, size: 14, color: theme.primary),
                         const SizedBox(width: 4),
                         Text(
-                          '${pulse.distanceKm!.toStringAsFixed(1)} km away',
+                          '${widget.pulse.distanceKm!.toStringAsFixed(1)} km away',
                           style: theme.bodySmall?.copyWith(
                               color: theme.primary,
                               fontWeight: FontWeight.w600),

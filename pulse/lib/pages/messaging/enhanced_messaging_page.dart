@@ -16,6 +16,8 @@ import '../calling/call_screen.dart';
 import '../calling/group_call_screen.dart';
 import 'package:permission_handler/permission_handler.dart';
 import '../../backend/socket_service.dart';
+import '../../widgets/moderation/report_content_dialog.dart';
+import '../../widgets/moderation/user_actions_sheet.dart';
 
 // ================= Models =================
 class RepliedMessage {
@@ -917,6 +919,60 @@ class _EnhancedMessagingPageState extends ConsumerState<EnhancedMessagingPage>
                   value: 'video', child: Text('Start group video call')),
             ],
             icon: Icon(Icons.groups_rounded, color: t.primaryText),
+          ),
+        // User moderation menu for direct chats
+        if (!widget.isGroupChat)
+          PopupMenuButton<String>(
+            tooltip: 'More options',
+            onSelected: (v) async {
+              if (v == 'report') {
+                final reported = await ReportContentDialog.show(
+                  context,
+                  contentType: 'user',
+                  reportedUserId: widget.recipientUserId,
+                );
+                if (reported == true && mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('User reported')),
+                  );
+                }
+              } else if (v == 'block') {
+                await UserActionsSheet.show(
+                  context,
+                  userId: widget.recipientUserId,
+                  userName: widget.recipientName,
+                );
+                if (mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('User blocked')),
+                  );
+                  Navigator.of(context).pop(); // Exit the chat
+                }
+              }
+            },
+            itemBuilder: (_) => const [
+              PopupMenuItem(
+                value: 'report',
+                child: Row(
+                  children: [
+                    Icon(Icons.flag_outlined, size: 20),
+                    SizedBox(width: 8),
+                    Text('Report User'),
+                  ],
+                ),
+              ),
+              PopupMenuItem(
+                value: 'block',
+                child: Row(
+                  children: [
+                    Icon(Icons.block_outlined, size: 20),
+                    SizedBox(width: 8),
+                    Text('Block User'),
+                  ],
+                ),
+              ),
+            ],
+            icon: Icon(Icons.more_vert_rounded, color: t.primaryText),
           ),
       ],
     );
@@ -2131,6 +2187,15 @@ class _EnhancedMessageBubbleState extends State<_EnhancedMessageBubble>
               _tile(Icons.copy, 'Copy', widget.onCopy, ctx),
             if (widget.isMine)
               _tile(Icons.delete_outline, 'Delete', widget.onDelete, ctx),
+            if (!widget.isMine)
+              _tile(Icons.flag_outlined, 'Report', () {
+                Navigator.pop(ctx);
+                ReportContentDialog.show(
+                  context,
+                  contentType: 'message',
+                  reportedMessageId: widget.message.id,
+                );
+              }, ctx),
             const SizedBox(height: 8)
           ]),
         ),

@@ -8,6 +8,9 @@ import '../highlights/manage_highlight_page.dart';
 import '../../components/highlights_row.dart';
 import '../../backend/api_service.dart';
 import '../../backend/socket_service.dart';
+import '../../services/moderation_service.dart';
+import '../../widgets/moderation/report_content_dialog.dart';
+import '../../widgets/moderation/user_actions_sheet.dart';
 
 // Simple profile model for viewing other users
 class PublicProfile {
@@ -312,16 +315,9 @@ class _ProfilePageState extends ConsumerState<ProfilePage>
           orElse: () => const Text('Profile'),
         ),
         actions: [
-          PopupMenuButton<String>(
-            itemBuilder: (context) => const [
-              PopupMenuItem(value: 'report', child: Text('Report')),
-              PopupMenuItem(value: 'block', child: Text('Block')),
-            ],
-            onSelected: (value) {
-              final snack = SnackBar(
-                  content: Text(value == 'report' ? 'Reported' : 'Blocked'));
-              ScaffoldMessenger.of(context).showSnackBar(snack);
-            },
+          IconButton(
+            icon: const Icon(Icons.more_vert_rounded),
+            onPressed: () => _showUserActionsSheet(context, widget.userId),
           ),
         ],
       ),
@@ -410,6 +406,20 @@ class _ProfilePageState extends ConsumerState<ProfilePage>
         ),
       );
     }();
+  }
+
+  void _showUserActionsSheet(BuildContext context, String userId) {
+    UserActionsSheet.show(
+      context,
+      userId: userId,
+      onReport: () {
+        ReportContentDialog.show(
+          context,
+          contentType: 'user',
+          reportedUserId: userId,
+        );
+      },
+    );
   }
 }
 

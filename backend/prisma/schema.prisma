@@ -138,8 +138,11 @@ model Pulse {
   authorId     String
   author       User      @relation("CreatedPulses", fields: [authorId], references: [id])
 
-  // Participants
+  // Participants (legacy relation - kept for backward compatibility)
   participants User[]    @relation("PulseParticipants")
+  
+  // Enhanced member management with roles
+  members      PulseMember[]
   
   // Additional pulse features
   maxParticipants Int?
@@ -150,6 +153,11 @@ model Pulse {
   currency    String? @default("USD")
   isRecurring Boolean @default(false)
   recurrencePattern Json? // Store recurrence pattern as JSON
+  
+  // Pulse settings
+  allowGuestInvites  Boolean @default(true)  // Whether non-admins can invite others
+  requireApproval    Boolean @default(false) // Whether joins require admin approval
+  isArchived         Boolean @default(false) // Soft delete / archive
 
   // Back relation to conversations (group chat)
   conversations Conversation[]
@@ -163,6 +171,36 @@ model Pulse {
   @@index([activeUntil])
   @@index([activeFrom, activeUntil])
   @@index([locationId])
+  @@index([isArchived])
+}
+
+// Pulse membership with roles for enhanced pulse management
+// Roles: OWNER (creator), ADMIN (co-organizer), MODERATOR (can manage chat), MEMBER (regular participant)
+model PulseMember {
+  id        String   @id @default(cuid())
+  pulseId   String
+  pulse     Pulse    @relation(fields: [pulseId], references: [id], onDelete: Cascade)
+  userId    String
+  role      String   @default("MEMBER") // OWNER, ADMIN, MODERATOR, MEMBER
+  joinedAt  DateTime @default(now())
+  invitedBy String?  // User ID who invited this member
+  
+  // Permissions (can be customized per member, null means use role defaults)
+  canInvite     Boolean? // Override: can invite new members
+  canRemove     Boolean? // Override: can remove other members
+  canEdit       Boolean? // Override: can edit pulse details
+  canManageChat Boolean? // Override: can manage chat (pin, delete messages)
+  
+  // Status
+  isMuted       Boolean @default(false) // Muted from chat
+  isBanned      Boolean @default(false) // Banned from pulse
+  bannedAt      DateTime?
+  bannedReason  String?
+  
+  @@unique([pulseId, userId])
+  @@index([pulseId])
+  @@index([userId])
+  @@index([role])
 }
 
 // Structured location shared by Users and Pulses
@@ -533,4 +571,244 @@ model UserFeatureCache {
   updatedAt               DateTime @default(now())
   
   @@index([updatedAt])
+}
+
+// ============================================================================
+// MODERATION & SAFETY SYSTEM MODELS
+// ============================================================================
+
+// Content reports - users can report pulses, messages, users, or highlights
+model ContentReport {
+  id             String   @id @default(cuid())
+  reporterId     String   // User who submitted the report
+  
+  // What is being reported (only one should be set)
+  reportedUserId    String?  // Reported user
+  reportedPulseId   String?  // Reported pulse
+  reportedMessageId String?  // Reported message
+  reportedHighlightId String? // Reported highlight
+  reportedPostId    String?  // Reported post
+  
+  // Report details
+  category       String   // SPAM, HARASSMENT, HATE_SPEECH, VIOLENCE, INAPPROPRIATE, SCAM, IMPERSONATION, OTHER
+  subcategory    String?  // More specific violation type
+  description    String?  // Optional user description of the issue
+  evidence       String[] @default([]) // URLs to screenshots or other evidence
+  
+  // Moderation status
+  status         String   @default("PENDING") // PENDING, UNDER_REVIEW, RESOLVED, DISMISSED
+  priority       String   @default("NORMAL") // LOW, NORMAL, HIGH, URGENT
+  
+  // AI moderation fields
+  aiAnalyzed        Boolean   @default(false)
+  aiConfidenceScore Float?    // 0.0-1.0 confidence in violation
+  aiCategories      String[]  @default([]) // AI-detected categories
+  aiRecommendation  String?   // AUTO_DISMISS, AUTO_ACTION, NEEDS_REVIEW
+  
+  // Resolution
+  reviewedBy     String?  // Admin user ID who reviewed
+  reviewedAt     DateTime?
+  resolution     String?  // ACTION_TAKEN, NO_VIOLATION, DUPLICATE, INVALID
+  actionTaken    String?  // WARNING, CONTENT_REMOVED, USER_SUSPENDED, USER_BANNED
+  resolutionNote String?  // Internal note about resolution
+  
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  
+  @@index([reporterId])
+  @@index([reportedUserId])
+  @@index([reportedPulseId])
+  @@index([reportedMessageId])
+  @@index([status])
+  @@index([priority])
+  @@index([createdAt])
+  @@index([aiRecommendation])
+}
+
+// Moderation actions taken on content/users
+model ModerationAction {
+  id             String   @id @default(cuid())
+  
+  // Target of the action
+  targetUserId   String?  // User being moderated
+  targetPulseId  String?  // Pulse being moderated
+  targetMessageId String? // Message being moderated
+  targetHighlightId String? // Highlight being moderated
+  targetPostId   String?  // Post being moderated
+  
+  // Action details
+  actionType     String   // WARNING, CONTENT_HIDDEN, CONTENT_REMOVED, USER_MUTED, USER_SUSPENDED, USER_BANNED, APPEAL_GRANTED
+  reason         String   // Reason for the action
+  category       String?  // Violation category
+  
+  // Duration (for temporary actions)
+  duration       Int?     // Duration in hours (null = permanent)
+  expiresAt      DateTime?
+  
+  // Tracking
+  performedBy    String   // Admin user ID or "SYSTEM" for automated
+  isAutomated    Boolean  @default(false)
+  relatedReportId String? // Link to the report that triggered this
+  
+  // Appeal handling
+  appealStatus   String?  // NONE, PENDING, GRANTED, DENIED
+  appealNote     String?
+  appealedAt     DateTime?
+  appealReviewedBy String?
+  appealReviewedAt DateTime?
+  
+  // Notification
+  notificationSent Boolean @default(false)
+  
+  createdAt      DateTime @default(now())
+  
+  @@index([targetUserId])
+  @@index([targetPulseId])
+  @@index([actionType])
+  @@index([performedBy])
+  @@index([createdAt])
+  @@index([expiresAt])
+}
+
+// User muting - users can mute other users (hide their content without blocking)
+model MutedUser {
+  id            String   @id @default(cuid())
+  mutingUserId  String   // User who muted
+  mutedUserId   String   // User who is muted
+  reason        String?  // Optional reason
+  muteMessages  Boolean  @default(true)  // Hide their messages
+  mutePulses    Boolean  @default(true)  // Hide their pulses
+  mutePosts     Boolean  @default(true)  // Hide their posts
+  createdAt     DateTime @default(now())
+  
+  @@unique([mutingUserId, mutedUserId])
+  @@index([mutingUserId])
+  @@index([mutedUserId])
+}
+
+// Content moderation flags - track moderation state of content
+model ContentModerationFlag {
+  id          String   @id @default(cuid())
+  
+  // Content being flagged
+  pulseId     String?  @unique
+  messageId   String?  @unique
+  highlightId String?  @unique
+  postId      String?  @unique
+  
+  // Moderation state
+  isHidden    Boolean  @default(false) // Hidden from public view
+  isRemoved   Boolean  @default(false) // Soft-deleted
+  reason      String?  // Reason for flag
+  
+  // AI analysis cache
+  aiAnalyzedAt     DateTime?
+  aiToxicityScore  Float?    // 0.0-1.0
+  aiSpamScore      Float?    // 0.0-1.0
+  aiViolenceScore  Float?    // 0.0-1.0
+  aiAdultScore     Float?    // 0.0-1.0
+  aiCategories     String[]  @default([])
+  
+  hiddenAt    DateTime?
+  hiddenBy    String?  // Admin ID or "SYSTEM"
+  removedAt   DateTime?
+  removedBy   String?  // Admin ID or "SYSTEM"
+  
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  
+  @@index([isHidden])
+  @@index([isRemoved])
+  @@index([aiToxicityScore])
+}
+
+// User moderation status - track user account restrictions
+model UserModerationStatus {
+  userId         String   @id
+  
+  // Warning system
+  warningCount   Int      @default(0)
+  lastWarningAt  DateTime?
+  
+  // Trust score (for automated moderation decisions)
+  trustScore     Float    @default(1.0) // 0.0-1.0, lower = less trusted
+  
+  // Restrictions
+  isMuted        Boolean  @default(false) // Can't send messages
+  mutedUntil     DateTime?
+  muteReason     String?
+  
+  isSuspended    Boolean  @default(false) // Can't access account
+  suspendedUntil DateTime?
+  suspendReason  String?
+  
+  isBanned       Boolean  @default(false) // Permanent ban
+  bannedAt       DateTime?
+  banReason      String?
+  
+  // Content restrictions
+  canCreatePulses  Boolean @default(true)
+  canSendMessages  Boolean @default(true)
+  canPostHighlights Boolean @default(true)
+  requiresModeration Boolean @default(false) // All content needs approval
+  
+  // Appeal info
+  lastAppealAt   DateTime?
+  appealCooldown DateTime? // Can't appeal until this date
+  
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  
+  @@index([isMuted])
+  @@index([isSuspended])
+  @@index([isBanned])
+  @@index([trustScore])
+}
+
+// Admin users for moderation dashboard
+model AdminUser {
+  id           String   @id @default(cuid())
+  userId       String   @unique // Reference to regular User
+  role         String   @default("MODERATOR") // MODERATOR, SENIOR_MODERATOR, ADMIN, SUPER_ADMIN
+  
+  // Permissions
+  canViewReports      Boolean @default(true)
+  canResolveReports   Boolean @default(true)
+  canWarnUsers        Boolean @default(true)
+  canMuteUsers        Boolean @default(true)
+  canSuspendUsers     Boolean @default(false)
+  canBanUsers         Boolean @default(false)
+  canRemoveContent    Boolean @default(true)
+  canViewAnalytics    Boolean @default(false)
+  canManageAdmins     Boolean @default(false)
+  
+  // Activity tracking
+  reportsReviewed Int      @default(0)
+  actionsPerformed Int     @default(0)
+  lastActiveAt    DateTime?
+  
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  
+  @@index([role])
+  @@index([isActive])
+}
+
+// Moderation audit log - comprehensive logging of all moderation activity
+model ModerationAuditLog {
+  id           String   @id @default(cuid())
+  adminUserId  String?  // null for system actions
+  action       String   // Action type
+  targetType   String   // USER, PULSE, MESSAGE, HIGHLIGHT, POST, REPORT
+  targetId     String   // ID of the target
+  details      Json?    // Additional details as JSON
+  ipAddress    String?
+  userAgent    String?
+  
+  createdAt    DateTime @default(now())
+  
+  @@index([adminUserId])
+  @@index([targetType, targetId])
+  @@index([createdAt])
 }

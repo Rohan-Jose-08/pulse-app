@@ -2206,7 +2206,29 @@ class _LiveGroupChatPageState extends ConsumerState<LiveGroupChatPage>
 
   String? _resolveName(String uid) {
     final m = _memberIndex[uid];
-    return (m?['displayName'] ?? m?['name'] ?? m?['username'])?.toString();
+    if (m == null) return null;
+    // Try various name fields
+    final displayName = m['displayName']?.toString();
+    final name = m['name']?.toString();
+    final username = m['username']?.toString();
+    final email = m['email']?.toString();
+    final firstName = m['firstName']?.toString() ?? m['first_name']?.toString();
+    final lastName = m['lastName']?.toString() ?? m['last_name']?.toString();
+
+    // Build full name from first/last if available
+    String? fullName;
+    if (firstName != null || lastName != null) {
+      fullName = [firstName, lastName]
+          .where((n) => n != null && n.isNotEmpty)
+          .join(' ');
+    }
+
+    // Return first available value
+    return displayName ??
+        fullName ??
+        name ??
+        username ??
+        (email != null ? email.split('@').first : null);
   }
 
   String _formatTime(DateTime dt) {

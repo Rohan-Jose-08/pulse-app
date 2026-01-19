@@ -21,7 +21,7 @@ String _detectBackendOrigin() {
   switch (defaultTargetPlatform) {
     case TargetPlatform.android:
       // Android emulator maps host loopback to 10.0.2.2
-      return 'http://192.168.1.10:3000';
+      return 'http://10.0.2.2:3000';
     default:
       // iOS simulator, desktop platforms
       return 'http://localhost:3000';

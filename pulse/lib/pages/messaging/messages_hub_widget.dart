@@ -1,5 +1,6 @@
 import '/flutter_flow/flutter_flow_theme.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:geolocator/geolocator.dart';
 import '/components/navbar_widget.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -12,6 +13,8 @@ import 'group_chat_page.dart';
 import 'create_group_chat_page.dart';
 import '/flutter_flow/flutter_flow_util.dart';
 import 'dart:async';
+import 'dart:ui';
+import 'package:flutter_animate/flutter_animate.dart';
 
 class MessagesHubWidget extends StatefulWidget {
   const MessagesHubWidget({super.key});
@@ -494,6 +497,83 @@ class _MessagesHubWidgetState extends State<MessagesHubWidget> {
     );
   }
 
+  /// Build a section header widget (extracted for performance)
+  Widget _buildSectionHeader(
+      FlutterFlowTheme theme, IconData icon, String title, Color color) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    return Container(
+      margin: const EdgeInsets.fromLTRB(16, 20, 16, 8),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          colors: [
+            color.withOpacity(isDark ? 0.2 : 0.1),
+            color.withOpacity(isDark ? 0.1 : 0.05),
+          ],
+        ),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(
+          color: color.withOpacity(0.2),
+          width: 1,
+        ),
+      ),
+      child: Row(
+        children: [
+          Container(
+            padding: const EdgeInsets.all(8),
+            decoration: BoxDecoration(
+              color: color.withOpacity(0.15),
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: Icon(icon, color: color, size: 18),
+          ),
+          const SizedBox(width: 12),
+          Text(
+            title,
+            style: theme.titleSmall.override(
+              fontWeight: FontWeight.w600,
+              color: color,
+              letterSpacing: 0.3,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Build empty state widget
+  Widget _buildEmptyState(
+      FlutterFlowTheme theme, String message, IconData icon) {
+    return Center(
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Container(
+            padding: const EdgeInsets.all(24),
+            decoration: BoxDecoration(
+              color: theme.primary.withOpacity(0.1),
+              shape: BoxShape.circle,
+            ),
+            child: Icon(
+              icon,
+              size: 48,
+              color: theme.primary.withOpacity(0.5),
+            ),
+          ),
+          const SizedBox(height: 16),
+          Text(
+            message,
+            style: theme.bodyLarge.override(
+              color: theme.secondaryText,
+              fontWeight: FontWeight.w500,
+            ),
+            textAlign: TextAlign.center,
+          ),
+        ],
+      ),
+    ).animate().fadeIn(duration: 400.ms).scale(begin: const Offset(0.9, 0.9));
+  }
+
   Widget _buildPulseGroupChatTile(BuildContext context,
       Map<String, dynamic> data, FlutterFlowTheme theme, String uid) {
     final chatName = data['name']?.toString() ?? 'Pulse Group Chat';
@@ -501,6 +581,8 @@ class _MessagesHubWidgetState extends State<MessagesHubWidget> {
     final updatedAt = DateTime.tryParse(data['updatedAt']?.toString() ?? '');
     final pulseId = data['pulseId']?.toString() ?? '';
     final avatarUrl = data['avatarUrl']?.toString();
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final hasActiveCall = _activeCalls.contains(data['id']?.toString());
 
     // Get participant count
     final List<dynamic> participants =
@@ -508,193 +590,244 @@ class _MessagesHubWidgetState extends State<MessagesHubWidget> {
     final participantCount = participants.length;
 
     return Container(
-      margin: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+      margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
       decoration: BoxDecoration(
-        color: theme.secondaryBackground,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: theme.primary.withOpacity(0.2), width: 1),
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: isDark
+              ? [
+                  const Color(0xFF1E1E2E),
+                  const Color(0xFF252538),
+                ]
+              : [
+                  Colors.white,
+                  const Color(0xFFFAFAFF),
+                ],
+        ),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(
+          color: hasActiveCall
+              ? Colors.green.withOpacity(0.5)
+              : theme.primary.withOpacity(0.15),
+          width: hasActiveCall ? 2 : 1,
+        ),
+        boxShadow: [
+          BoxShadow(
+            color:
+                (hasActiveCall ? Colors.green : theme.primary).withOpacity(0.1),
+            blurRadius: 12,
+            offset: const Offset(0, 4),
+          ),
+        ],
       ),
-      child: ListTile(
-        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-        leading: Stack(
-          children: [
-            CircleAvatar(
-              backgroundColor: theme.primary.withOpacity(0.1),
-              backgroundImage: avatarUrl != null && avatarUrl.isNotEmpty
-                  ? NetworkImage(avatarUrl)
-                  : null,
-              child: avatarUrl == null || avatarUrl.isEmpty
-                  ? Icon(
-                      Icons.group_rounded,
-                      color: theme.primary,
-                      size: 24,
-                    )
-                  : null,
-            ),
-            // Ongoing call indicator (non-intrusive)
-            if (_activeCalls.contains(data['id']?.toString()))
-              Positioned(
-                top: -2,
-                left: -2,
-                child: Container(
-                  padding: const EdgeInsets.all(2),
-                  decoration: BoxDecoration(
-                    color: Colors.green,
-                    shape: BoxShape.circle,
-                    border:
-                        Border.all(color: theme.secondaryBackground, width: 2),
-                  ),
-                  child: Icon(
-                    _activeCallIsVideo[data['id']?.toString()] == true
-                        ? Icons.videocam_rounded
-                        : Icons.call_rounded,
-                    size: 12,
-                    color: Colors.white,
-                  ),
-                ),
-              ),
-            if (participantCount > 0)
-              Positioned(
-                right: -2,
-                bottom: -2,
-                child: Container(
-                  padding: const EdgeInsets.all(2),
-                  decoration: BoxDecoration(
-                    color: theme.primary,
-                    borderRadius: BorderRadius.circular(10),
-                  ),
-                  constraints: const BoxConstraints(
-                    minWidth: 20,
-                    minHeight: 20,
-                  ),
-                  child: Text(
-                    participantCount.toString(),
-                    style: theme.bodySmall.override(
-                      color: Colors.white,
-                      fontSize: 10,
-                      fontWeight: FontWeight.w600,
-                    ),
-                    textAlign: TextAlign.center,
-                  ),
-                ),
-              ),
-          ],
-        ),
-        title: Text(
-          chatName,
-          style: theme.titleMedium.override(fontWeight: FontWeight.w500),
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-        ),
-        subtitle: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            // Active call status (Discord-style)
-            if (_activeCalls.contains(data['id']?.toString()))
-              Padding(
-                padding: const EdgeInsets.only(bottom: 4),
-                child: Row(
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          borderRadius: BorderRadius.circular(16),
+          onTap: () {
+            HapticFeedback.lightImpact();
+            Navigator.of(context).push(MaterialPageRoute(
+                builder: (_) => LiveGroupChatPage(
+                      chatId: data['id']?.toString() ?? '',
+                      groupName: chatName,
+                      pulseName: pulseId,
+                      members: (data['participants'] as List<dynamic>?)
+                          ?.whereType<Map<String, dynamic>>()
+                          .toList(),
+                    )));
+          },
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Row(
+              children: [
+                // Avatar with status
+                Stack(
                   children: [
                     Container(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 8, vertical: 4),
+                      width: 56,
+                      height: 56,
                       decoration: BoxDecoration(
-                        color:
-                            (_activeCallIsVideo[data['id']?.toString()] == true
-                                    ? Colors.purple
-                                    : Colors.green)
-                                .withOpacity(0.15),
-                        borderRadius: BorderRadius.circular(12),
+                        gradient: LinearGradient(
+                          colors: [
+                            theme.primary.withOpacity(0.2),
+                            theme.primary.withOpacity(0.1),
+                          ],
+                        ),
+                        shape: BoxShape.circle,
                         border: Border.all(
-                          color:
-                              _activeCallIsVideo[data['id']?.toString()] == true
-                                  ? Colors.purple
-                                  : Colors.green,
-                          width: 1,
+                          color: theme.primary.withOpacity(0.3),
+                          width: 2,
                         ),
                       ),
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Icon(
+                      child: avatarUrl != null && avatarUrl.isNotEmpty
+                          ? ClipOval(
+                              child: Image.network(
+                                avatarUrl,
+                                fit: BoxFit.cover,
+                                errorBuilder: (_, __, ___) => Icon(
+                                  Icons.group_rounded,
+                                  color: theme.primary,
+                                  size: 26,
+                                ),
+                              ),
+                            )
+                          : Icon(
+                              Icons.group_rounded,
+                              color: theme.primary,
+                              size: 26,
+                            ),
+                    ),
+                    // Active call indicator
+                    if (hasActiveCall)
+                      Positioned(
+                        top: 0,
+                        right: 0,
+                        child: Container(
+                          padding: const EdgeInsets.all(4),
+                          decoration: BoxDecoration(
+                            color: Colors.green,
+                            shape: BoxShape.circle,
+                            border: Border.all(
+                              color: isDark
+                                  ? const Color(0xFF1E1E2E)
+                                  : Colors.white,
+                              width: 2,
+                            ),
+                            boxShadow: [
+                              BoxShadow(
+                                color: Colors.green.withOpacity(0.4),
+                                blurRadius: 8,
+                              ),
+                            ],
+                          ),
+                          child: Icon(
                             _activeCallIsVideo[data['id']?.toString()] == true
                                 ? Icons.videocam_rounded
                                 : Icons.call_rounded,
-                            size: 14,
-                            color: _activeCallIsVideo[data['id']?.toString()] ==
-                                    true
-                                ? Colors.purple
-                                : Colors.green,
+                            size: 12,
+                            color: Colors.white,
                           ),
-                          const SizedBox(width: 4),
-                          Text(
-                            _activeCallParticipantCounts[
-                                        data['id']?.toString()] !=
-                                    null
-                                ? '${_activeCallParticipantCounts[data['id']?.toString()]} in call'
-                                : 'Call active',
-                            style: theme.bodySmall.override(
-                              color:
-                                  _activeCallIsVideo[data['id']?.toString()] ==
-                                          true
-                                      ? Colors.purple
-                                      : Colors.green,
-                              fontWeight: FontWeight.w600,
-                              fontSize: 11,
+                        ).animate(onPlay: (c) => c.repeat()).shimmer(
+                            duration: 2.seconds,
+                            color: Colors.white.withOpacity(0.3)),
+                      ),
+                    // Participant count badge
+                    if (participantCount > 0)
+                      Positioned(
+                        right: 0,
+                        bottom: 0,
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 6, vertical: 2),
+                          decoration: BoxDecoration(
+                            gradient: const LinearGradient(
+                              colors: [Color(0xFF6366F1), Color(0xFF8B5CF6)],
+                            ),
+                            borderRadius: BorderRadius.circular(10),
+                            boxShadow: [
+                              BoxShadow(
+                                color: const Color(0xFF6366F1).withOpacity(0.3),
+                                blurRadius: 4,
+                              ),
+                            ],
+                          ),
+                          child: Text(
+                            participantCount.toString(),
+                            style: theme.labelSmall.override(
+                              color: Colors.white,
+                              fontSize: 10,
+                              fontWeight: FontWeight.w700,
                             ),
                           ),
-                        ],
+                        ),
                       ),
-                    ),
-                    const SizedBox(width: 8),
-                    Text(
-                      'Tap to join',
-                      style: theme.bodySmall.override(
-                        color: theme.secondaryText.withOpacity(0.7),
-                        fontSize: 11,
-                        fontStyle: FontStyle.italic,
-                      ),
-                    ),
                   ],
                 ),
-              ),
-            if (pulseId.isNotEmpty)
-              Text(
-                'Pulse Group • $participantCount members',
-                style: theme.bodySmall.override(
-                  color: theme.primary,
-                  fontSize: 12,
+                const SizedBox(width: 14),
+                // Content
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          Expanded(
+                            child: Text(
+                              chatName,
+                              style: theme.titleSmall.override(
+                                fontWeight: FontWeight.w600,
+                                letterSpacing: -0.3,
+                              ),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                          if (hasActiveCall)
+                            Container(
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 8, vertical: 4),
+                              decoration: BoxDecoration(
+                                color: Colors.green.withOpacity(0.15),
+                                borderRadius: BorderRadius.circular(12),
+                              ),
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Container(
+                                    width: 6,
+                                    height: 6,
+                                    decoration: const BoxDecoration(
+                                      color: Colors.green,
+                                      shape: BoxShape.circle,
+                                    ),
+                                  ),
+                                  const SizedBox(width: 4),
+                                  Text(
+                                    'Live',
+                                    style: theme.labelSmall.override(
+                                      color: Colors.green,
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            )
+                                .animate(onPlay: (c) => c.repeat())
+                                .fadeIn(duration: 500.ms)
+                                .then()
+                                .fadeOut(duration: 500.ms),
+                        ],
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        lastMessage.isNotEmpty
+                            ? lastMessage
+                            : 'Start chatting! 💬',
+                        style: theme.bodySmall.override(
+                          color: theme.secondaryText,
+                          fontWeight: FontWeight.w400,
+                        ),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ],
+                  ),
                 ),
-              ),
-            const SizedBox(height: 2),
-            Text(
-              lastMessage.isNotEmpty
-                  ? lastMessage
-                  : 'Start chatting with your pulse group! 🚀',
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: theme.bodySmall.override(color: theme.secondaryText),
+                const SizedBox(width: 8),
+                // Time
+                if (updatedAt != null)
+                  Text(
+                    dateTimeFormat('relative', updatedAt),
+                    style: theme.labelSmall.override(
+                      color: theme.secondaryText.withOpacity(0.7),
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+              ],
             ),
-          ],
+          ),
         ),
-        trailing: updatedAt != null
-            ? Text(
-                dateTimeFormat('relative', updatedAt),
-                style: theme.bodySmall.override(color: theme.secondaryText),
-              )
-            : null,
-        onTap: () {
-          Navigator.of(context).push(MaterialPageRoute(
-              builder: (_) => LiveGroupChatPage(
-                    chatId: data['id']?.toString() ?? '',
-                    groupName: chatName,
-                    pulseName: pulseId.isNotEmpty ? pulseId : null,
-                    members: participants
-                        .whereType<Map<String, dynamic>>()
-                        .map((e) => e)
-                        .toList(),
-                  )));
-        },
       ),
     );
   }
@@ -706,6 +839,8 @@ class _MessagesHubWidgetState extends State<MessagesHubWidget> {
     final lastMessage = (data['lastMessageText'] as String?) ?? '';
     final updatedAt = DateTime.tryParse(data['updatedAt']?.toString() ?? '');
     final avatarUrl = data['avatarUrl']?.toString();
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final hasActiveCall = _activeCalls.contains(data['id']?.toString());
 
     // Get participant count
     final List<dynamic> participants =
@@ -713,200 +848,291 @@ class _MessagesHubWidgetState extends State<MessagesHubWidget> {
     final participantCount = participants.length;
 
     return Container(
-      margin: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+      margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
       decoration: BoxDecoration(
-        color: theme.secondaryBackground,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: theme.accent2.withOpacity(0.3), width: 1),
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: isDark
+              ? [
+                  const Color(0xFF1E1E2E),
+                  const Color(0xFF252538),
+                ]
+              : [
+                  Colors.white,
+                  const Color(0xFFFFFAFA),
+                ],
+        ),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(
+          color: hasActiveCall
+              ? Colors.green.withOpacity(0.5)
+              : theme.accent2.withOpacity(0.2),
+          width: hasActiveCall ? 2 : 1,
+        ),
+        boxShadow: [
+          BoxShadow(
+            color: (hasActiveCall ? Colors.green : theme.accent2)
+                .withOpacity(0.08),
+            blurRadius: 12,
+            offset: const Offset(0, 4),
+          ),
+        ],
       ),
-      child: ListTile(
-        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-        leading: Stack(
-          children: [
-            CircleAvatar(
-              backgroundColor: theme.accent2.withOpacity(0.1),
-              backgroundImage: avatarUrl != null && avatarUrl.isNotEmpty
-                  ? NetworkImage(avatarUrl)
-                  : null,
-              child: avatarUrl == null || avatarUrl.isEmpty
-                  ? Icon(
-                      Icons.people,
-                      color: theme.accent2,
-                      size: 24,
-                    )
-                  : null,
-            ),
-            // Ongoing call indicator (non-intrusive)
-            if (_activeCalls.contains(data['id']?.toString()))
-              Positioned(
-                top: -2,
-                left: -2,
-                child: Container(
-                  padding: const EdgeInsets.all(2),
-                  decoration: BoxDecoration(
-                    color: Colors.green,
-                    shape: BoxShape.circle,
-                    border:
-                        Border.all(color: theme.secondaryBackground, width: 2),
-                  ),
-                  child: Icon(
-                    _activeCallIsVideo[data['id']?.toString()] == true
-                        ? Icons.videocam_rounded
-                        : Icons.call_rounded,
-                    size: 12,
-                    color: Colors.white,
-                  ),
-                ),
-              ),
-            if (participantCount > 0)
-              Positioned(
-                right: -2,
-                bottom: -2,
-                child: Container(
-                  padding: const EdgeInsets.all(2),
-                  decoration: BoxDecoration(
-                    color: theme.accent2,
-                    shape: BoxShape.circle,
-                    border:
-                        Border.all(color: theme.secondaryBackground, width: 2),
-                  ),
-                  constraints:
-                      const BoxConstraints(minWidth: 20, minHeight: 20),
-                  child: Center(
-                    child: Text(
-                      participantCount.toString(),
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 10,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-          ],
-        ),
-        title: Text(
-          chatName,
-          style: theme.titleSmall.override(fontWeight: FontWeight.w600),
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-        ),
-        subtitle: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            // Active call status (Discord-style)
-            if (_activeCalls.contains(data['id']?.toString()))
-              Padding(
-                padding: const EdgeInsets.only(bottom: 4),
-                child: Row(
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          borderRadius: BorderRadius.circular(16),
+          onTap: () {
+            HapticFeedback.lightImpact();
+            Navigator.of(context).push(MaterialPageRoute(
+                builder: (_) => GroupChatPage(
+                      chatId: data['id']?.toString() ?? '',
+                      groupName: chatName,
+                      groupDescription: description,
+                      groupAvatarUrl: avatarUrl,
+                      members: participants
+                          .whereType<Map<String, dynamic>>()
+                          .map((e) => e)
+                          .toList(),
+                    )));
+          },
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Row(
+              children: [
+                // Avatar with status
+                Stack(
                   children: [
                     Container(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 8, vertical: 4),
+                      width: 56,
+                      height: 56,
                       decoration: BoxDecoration(
-                        color:
-                            (_activeCallIsVideo[data['id']?.toString()] == true
-                                    ? Colors.purple
-                                    : Colors.green)
-                                .withOpacity(0.15),
-                        borderRadius: BorderRadius.circular(12),
+                        gradient: LinearGradient(
+                          colors: [
+                            theme.accent2.withOpacity(0.2),
+                            theme.accent2.withOpacity(0.1),
+                          ],
+                        ),
+                        shape: BoxShape.circle,
                         border: Border.all(
-                          color:
-                              _activeCallIsVideo[data['id']?.toString()] == true
-                                  ? Colors.purple
-                                  : Colors.green,
-                          width: 1,
+                          color: theme.accent2.withOpacity(0.3),
+                          width: 2,
                         ),
                       ),
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Icon(
-                            _activeCallIsVideo[data['id']?.toString()] == true
-                                ? Icons.videocam_rounded
-                                : Icons.call_rounded,
-                            size: 14,
+                      child: avatarUrl != null && avatarUrl.isNotEmpty
+                          ? ClipOval(
+                              child: Image.network(
+                                avatarUrl,
+                                fit: BoxFit.cover,
+                                errorBuilder: (_, __, ___) => Icon(
+                                  Icons.people,
+                                  color: theme.accent2,
+                                  size: 26,
+                                ),
+                              ),
+                            )
+                          : Icon(
+                              Icons.people,
+                              color: theme.accent2,
+                              size: 26,
+                            ),
+                    ),
+                    // Active call indicator
+                    if (hasActiveCall)
+                      Positioned(
+                        top: 0,
+                        right: 0,
+                        child: Container(
+                          padding: const EdgeInsets.all(4),
+                          decoration: BoxDecoration(
                             color: _activeCallIsVideo[data['id']?.toString()] ==
                                     true
                                 ? Colors.purple
                                 : Colors.green,
+                            shape: BoxShape.circle,
+                            border: Border.all(
+                              color: isDark
+                                  ? const Color(0xFF1E1E2E)
+                                  : Colors.white,
+                              width: 2,
+                            ),
+                            boxShadow: [
+                              BoxShadow(
+                                color: (_activeCallIsVideo[
+                                                data['id']?.toString()] ==
+                                            true
+                                        ? Colors.purple
+                                        : Colors.green)
+                                    .withOpacity(0.4),
+                                blurRadius: 8,
+                              ),
+                            ],
                           ),
-                          const SizedBox(width: 4),
-                          Text(
-                            _activeCallParticipantCounts[
-                                        data['id']?.toString()] !=
-                                    null
-                                ? '${_activeCallParticipantCounts[data['id']?.toString()]} in call'
-                                : 'Call active',
-                            style: theme.bodySmall.override(
-                              color:
-                                  _activeCallIsVideo[data['id']?.toString()] ==
-                                          true
-                                      ? Colors.purple
-                                      : Colors.green,
-                              fontWeight: FontWeight.w600,
-                              fontSize: 11,
+                          child: Icon(
+                            _activeCallIsVideo[data['id']?.toString()] == true
+                                ? Icons.videocam_rounded
+                                : Icons.call_rounded,
+                            size: 12,
+                            color: Colors.white,
+                          ),
+                        ).animate(onPlay: (c) => c.repeat()).shimmer(
+                            duration: 2.seconds,
+                            color: Colors.white.withOpacity(0.3)),
+                      ),
+                    // Participant count badge
+                    if (participantCount > 0)
+                      Positioned(
+                        right: 0,
+                        bottom: 0,
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 6, vertical: 2),
+                          decoration: BoxDecoration(
+                            gradient: LinearGradient(
+                              colors: [
+                                theme.accent2,
+                                theme.accent2.withOpacity(0.8),
+                              ],
+                            ),
+                            borderRadius: BorderRadius.circular(10),
+                            boxShadow: [
+                              BoxShadow(
+                                color: theme.accent2.withOpacity(0.3),
+                                blurRadius: 4,
+                              ),
+                            ],
+                          ),
+                          child: Text(
+                            participantCount.toString(),
+                            style: theme.labelSmall.override(
+                              color: Colors.white,
+                              fontSize: 10,
+                              fontWeight: FontWeight.w700,
                             ),
                           ),
-                        ],
+                        ),
                       ),
-                    ),
-                    const SizedBox(width: 8),
-                    Text(
-                      'Tap to join',
-                      style: theme.bodySmall.override(
-                        color: theme.secondaryText.withOpacity(0.7),
-                        fontSize: 11,
-                        fontStyle: FontStyle.italic,
-                      ),
-                    ),
                   ],
                 ),
-              ),
-            if (description != null && description.isNotEmpty)
-              Text(
-                description,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: theme.bodySmall.override(
-                  color: theme.secondaryText,
-                  fontSize: 11,
+                const SizedBox(width: 14),
+                // Content
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          Expanded(
+                            child: Text(
+                              chatName,
+                              style: theme.titleSmall.override(
+                                fontWeight: FontWeight.w600,
+                                letterSpacing: -0.3,
+                              ),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                          if (hasActiveCall)
+                            Container(
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 8, vertical: 4),
+                              decoration: BoxDecoration(
+                                color: (_activeCallIsVideo[
+                                                data['id']?.toString()] ==
+                                            true
+                                        ? Colors.purple
+                                        : Colors.green)
+                                    .withOpacity(0.15),
+                                borderRadius: BorderRadius.circular(12),
+                              ),
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Container(
+                                    width: 6,
+                                    height: 6,
+                                    decoration: BoxDecoration(
+                                      color: _activeCallIsVideo[
+                                                  data['id']?.toString()] ==
+                                              true
+                                          ? Colors.purple
+                                          : Colors.green,
+                                      shape: BoxShape.circle,
+                                    ),
+                                  ),
+                                  const SizedBox(width: 4),
+                                  Text(
+                                    _activeCallParticipantCounts[
+                                                data['id']?.toString()] !=
+                                            null
+                                        ? '${_activeCallParticipantCounts[data['id']?.toString()]} in call'
+                                        : 'Live',
+                                    style: theme.labelSmall.override(
+                                      color: _activeCallIsVideo[
+                                                  data['id']?.toString()] ==
+                                              true
+                                          ? Colors.purple
+                                          : Colors.green,
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            )
+                                .animate(onPlay: (c) => c.repeat())
+                                .fadeIn(duration: 500.ms)
+                                .then()
+                                .fadeOut(duration: 500.ms),
+                        ],
+                      ),
+                      const SizedBox(height: 4),
+                      if (description != null && description.isNotEmpty)
+                        Text(
+                          description,
+                          style: theme.labelSmall.override(
+                            color: theme.secondaryText.withOpacity(0.7),
+                          ),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      Text(
+                        lastMessage.isNotEmpty
+                            ? lastMessage
+                            : 'No messages yet 💬',
+                        style: theme.bodySmall.override(
+                          color: theme.secondaryText,
+                          fontWeight: FontWeight.w400,
+                        ),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ],
+                  ),
                 ),
-              ),
-            Text(
-              lastMessage.isNotEmpty ? lastMessage : 'No messages yet',
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: theme.bodySmall.override(color: theme.secondaryText),
+                const SizedBox(width: 8),
+                // Time
+                if (updatedAt != null)
+                  Text(
+                    dateTimeFormat('relative', updatedAt),
+                    style: theme.labelSmall.override(
+                      color: theme.secondaryText.withOpacity(0.7),
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+              ],
             ),
-          ],
+          ),
         ),
-        trailing: updatedAt != null
-            ? Text(
-                dateTimeFormat('relative', updatedAt),
-                style: theme.bodySmall.override(color: theme.secondaryText),
-              )
-            : null,
-        onTap: () {
-          Navigator.of(context).push(MaterialPageRoute(
-              builder: (_) => GroupChatPage(
-                    chatId: data['id']?.toString() ?? '',
-                    groupName: chatName,
-                    groupDescription: description,
-                    groupAvatarUrl: avatarUrl,
-                    members: participants
-                        .whereType<Map<String, dynamic>>()
-                        .map((e) => e)
-                        .toList(),
-                  )));
-        },
       ),
     );
   }
 
   Widget _buildDirectChatTile(BuildContext context, Map<String, dynamic> data,
       FlutterFlowTheme theme, String uid) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+
     // Participants may be under participants/members/users
     List<dynamic> participants = (data['participants'] as List?) ?? [];
     if (participants.isEmpty) participants = (data['members'] as List?) ?? [];
@@ -980,70 +1206,191 @@ class _MessagesHubWidgetState extends State<MessagesHubWidget> {
     }
 
     final userStatus = _userStatuses[otherId];
+    final isOnline = userStatus == 'online';
+    final isAway = userStatus == 'away';
 
-    return ListTile(
-      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
-      leading: Stack(
-        children: [
-          CircleAvatar(
-            backgroundImage:
-                otherPhoto.isNotEmpty ? NetworkImage(otherPhoto) : null,
-            child: otherPhoto.isEmpty ? const Icon(Icons.person) : null,
-          ),
-          Positioned(
-            right: 0,
-            bottom: 0,
-            child: _buildStatusIndicator(userStatus),
+    return Container(
+      margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: isDark
+              ? [
+                  const Color(0xFF1E1E2E),
+                  const Color(0xFF252538),
+                ]
+              : [
+                  Colors.white,
+                  const Color(0xFFFAFAFC),
+                ],
+        ),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(
+          color: isOnline
+              ? Colors.green.withOpacity(0.3)
+              : theme.alternate.withOpacity(0.3),
+          width: 1,
+        ),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(isDark ? 0.2 : 0.05),
+            blurRadius: 10,
+            offset: const Offset(0, 4),
           ),
         ],
       ),
-      title: Row(
-        children: [
-          Expanded(
-            child: Text(
-              otherName,
-              style: theme.titleMedium,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-            ),
-          ),
-          if (userStatus == 'online')
-            Container(
-              margin: const EdgeInsets.only(left: 4),
-              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-              decoration: BoxDecoration(
-                color: Colors.green.withOpacity(0.1),
-                borderRadius: BorderRadius.circular(8),
-              ),
-              child: Text(
-                'Active',
-                style: theme.bodySmall.override(
-                  color: Colors.green,
-                  fontSize: 10,
-                  fontWeight: FontWeight.w600,
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          borderRadius: BorderRadius.circular(16),
+          onTap: () {
+            HapticFeedback.lightImpact();
+            Navigator.of(context).push(MaterialPageRoute(
+                builder: (_) => EnhancedMessagingPage(
+                      chatId: data['id']?.toString() ?? '',
+                      recipientUserId: otherId,
+                      recipientName: otherName,
+                      recipientPhotoUrl: otherPhoto,
+                    )));
+          },
+          child: Padding(
+            padding: const EdgeInsets.all(14),
+            child: Row(
+              children: [
+                // Avatar with status indicator
+                Stack(
+                  children: [
+                    Container(
+                      width: 56,
+                      height: 56,
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        gradient: LinearGradient(
+                          colors: [
+                            theme.primary.withOpacity(0.1),
+                            theme.primary.withOpacity(0.05),
+                          ],
+                        ),
+                        border: Border.all(
+                          color: isOnline
+                              ? Colors.green.withOpacity(0.5)
+                              : theme.alternate.withOpacity(0.3),
+                          width: 2,
+                        ),
+                      ),
+                      child: otherPhoto.isNotEmpty
+                          ? ClipOval(
+                              child: Image.network(
+                                otherPhoto,
+                                fit: BoxFit.cover,
+                                errorBuilder: (_, __, ___) => Icon(
+                                  Icons.person_rounded,
+                                  color: theme.secondaryText,
+                                  size: 26,
+                                ),
+                              ),
+                            )
+                          : Icon(
+                              Icons.person_rounded,
+                              color: theme.secondaryText,
+                              size: 26,
+                            ),
+                    ),
+                    // Online/Away indicator
+                    if (isOnline || isAway)
+                      Positioned(
+                        right: 2,
+                        bottom: 2,
+                        child: Container(
+                          width: 14,
+                          height: 14,
+                          decoration: BoxDecoration(
+                            color: isOnline ? Colors.green : Colors.orange,
+                            shape: BoxShape.circle,
+                            border: Border.all(
+                              color: isDark
+                                  ? const Color(0xFF1E1E2E)
+                                  : Colors.white,
+                              width: 2,
+                            ),
+                            boxShadow: [
+                              BoxShadow(
+                                color: (isOnline ? Colors.green : Colors.orange)
+                                    .withOpacity(0.4),
+                                blurRadius: 6,
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                  ],
                 ),
-              ),
+                const SizedBox(width: 14),
+                // Content
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          Expanded(
+                            child: Text(
+                              otherName,
+                              style: theme.titleSmall.override(
+                                fontWeight: FontWeight.w600,
+                                letterSpacing: -0.3,
+                              ),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                          if (isOnline)
+                            Container(
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 8, vertical: 3),
+                              decoration: BoxDecoration(
+                                color: Colors.green.withOpacity(0.1),
+                                borderRadius: BorderRadius.circular(12),
+                              ),
+                              child: Text(
+                                'Active',
+                                style: theme.labelSmall.override(
+                                  color: Colors.green,
+                                  fontWeight: FontWeight.w600,
+                                  fontSize: 10,
+                                ),
+                              ),
+                            ),
+                        ],
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        lastMessage.isNotEmpty ? lastMessage : 'Say hi 👋',
+                        style: theme.bodySmall.override(
+                          color: theme.secondaryText,
+                          fontWeight: FontWeight.w400,
+                        ),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(width: 8),
+                // Time
+                Text(
+                  dateTimeFormat('relative', updatedAt),
+                  style: theme.labelSmall.override(
+                    color: theme.secondaryText.withOpacity(0.7),
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+              ],
             ),
-        ],
+          ),
+        ),
       ),
-      subtitle: Text(
-        lastMessage.isNotEmpty ? lastMessage : 'Say hi 👋',
-        maxLines: 1,
-        overflow: TextOverflow.ellipsis,
-      ),
-      trailing: Text(
-        dateTimeFormat('relative', updatedAt),
-        style: theme.bodySmall.override(color: theme.secondaryText),
-      ),
-      onTap: () {
-        Navigator.of(context).push(MaterialPageRoute(
-            builder: (_) => EnhancedMessagingPage(
-                  chatId: data['id']?.toString() ?? '',
-                  recipientUserId: otherId,
-                  recipientName: otherName,
-                  recipientPhotoUrl: otherPhoto,
-                )));
-      },
     );
   }
 
@@ -1051,26 +1398,81 @@ class _MessagesHubWidgetState extends State<MessagesHubWidget> {
   Widget build(BuildContext context) {
     final theme = FlutterFlowTheme.of(context);
     final uid = currentUserUid;
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+
     return Scaffold(
       key: _scaffoldKey,
       backgroundColor: theme.primaryBackground,
-      appBar: AppBar(
-        backgroundColor: theme.secondaryBackground,
-        elevation: 0.5,
-        title: Text(
-          'Messages',
-          style: theme.titleLarge,
+      extendBodyBehindAppBar: true,
+      appBar: PreferredSize(
+        preferredSize: const Size.fromHeight(kToolbarHeight + 20),
+        child: ClipRect(
+          child: BackdropFilter(
+            filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
+            child: Container(
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                  colors: isDark
+                      ? [
+                          const Color(0xFF1A1A2E).withOpacity(0.9),
+                          const Color(0xFF16213E).withOpacity(0.85),
+                        ]
+                      : [
+                          Colors.white.withOpacity(0.9),
+                          Colors.white.withOpacity(0.8),
+                        ],
+                ),
+                border: Border(
+                  bottom: BorderSide(
+                    color: isDark
+                        ? Colors.white.withOpacity(0.1)
+                        : Colors.black.withOpacity(0.05),
+                    width: 0.5,
+                  ),
+                ),
+              ),
+              child: SafeArea(
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(20, 12, 20, 12),
+                  child: Row(
+                    children: [
+                      ShaderMask(
+                        shaderCallback: (bounds) => const LinearGradient(
+                          colors: [Color(0xFF6366F1), Color(0xFF8B5CF6)],
+                        ).createShader(bounds),
+                        child: Text(
+                          'Messages',
+                          style: theme.headlineMedium.override(
+                            fontWeight: FontWeight.w700,
+                            color: Colors.white,
+                            letterSpacing: -0.5,
+                          ),
+                        ),
+                      ),
+                      const Spacer(),
+                      _GlassIconButton(
+                        icon: Icons.search_rounded,
+                        onPressed: () {
+                          HapticFeedback.lightImpact();
+                          // TODO: Implement search
+                        },
+                        isDark: isDark,
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
         ),
-        centerTitle: false,
       ),
       body: SafeArea(
+        top: false,
         child: uid.isEmpty
-            ? Center(
-                child: Text(
-                  'Please log in to view messages',
-                  style: theme.bodyMedium.override(color: theme.secondaryText),
-                ),
-              )
+            ? _buildEmptyState(
+                theme, 'Please log in to view messages', Icons.login_rounded)
             : Consumer(builder: (context, ref, _) {
                 SocketService.instance.connect();
                 final asyncConvos = ref.watch(_conversationsProvider(uid));
@@ -1259,98 +1661,61 @@ class _MessagesHubWidgetState extends State<MessagesHubWidget> {
 
                             print(
                                 '[MessagesHub] Building ListView with _activeCalls: $_activeCalls');
-                            return ListView(
+
+                            // Build items list for optimized ListView.builder
+                            final List<Widget> items = [];
+
+                            // Group Chats Section
+                            if (groupChats.isNotEmpty) {
+                              items.add(_buildSectionHeader(theme, Icons.people,
+                                  'Group Chats', theme.accent2));
+                              items.addAll(groupChats.map((data) =>
+                                  RepaintBoundary(
+                                      child: _buildGroupChatTile(
+                                          context, data, theme, uid))));
+                              if (pulseChats.isNotEmpty ||
+                                  displayDirectChats.isNotEmpty) {
+                                items.add(Divider(
+                                    height: 24, color: theme.alternate));
+                              }
+                            }
+
+                            // Pulse Group Chats Section
+                            if (pulseChats.isNotEmpty) {
+                              items.add(_buildSectionHeader(
+                                  theme,
+                                  Icons.group_rounded,
+                                  'Pulse Group Chats',
+                                  theme.primary));
+                              items.addAll(pulseChats.map((data) =>
+                                  RepaintBoundary(
+                                      child: _buildPulseGroupChatTile(
+                                          context, data, theme, uid))));
+                              if (displayDirectChats.isNotEmpty) {
+                                items.add(Divider(
+                                    height: 24, color: theme.alternate));
+                              }
+                            }
+
+                            // Direct Messages Section
+                            if (displayDirectChats.isNotEmpty) {
+                              items.add(_buildSectionHeader(
+                                  theme,
+                                  Icons.chat_rounded,
+                                  'Direct Messages',
+                                  theme.secondaryText));
+                              items.addAll(displayDirectChats.map((data) =>
+                                  RepaintBoundary(
+                                      child: _buildDirectChatTile(
+                                          context, data, theme, uid))));
+                            }
+
+                            return ListView.builder(
                               key: ValueKey(_activeCalls.join('_')),
-                              children: [
-                                // Group Chats Section
-                                if (groupChats.isNotEmpty) ...[
-                                  Container(
-                                    padding: const EdgeInsets.fromLTRB(
-                                        16, 16, 16, 8),
-                                    child: Row(
-                                      children: [
-                                        Icon(
-                                          Icons.people,
-                                          color: theme.accent2,
-                                          size: 20,
-                                        ),
-                                        const SizedBox(width: 8),
-                                        Text(
-                                          'Group Chats',
-                                          style: theme.titleMedium.override(
-                                            fontWeight: FontWeight.w600,
-                                            color: theme.accent2,
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-                                  ),
-                                  ...groupChats.map((data) =>
-                                      _buildGroupChatTile(
-                                          context, data, theme, uid)),
-                                  if (pulseChats.isNotEmpty ||
-                                      displayDirectChats.isNotEmpty)
-                                    Divider(height: 24, color: theme.alternate),
-                                ],
-
-                                // Pulse Group Chats Section
-                                if (pulseChats.isNotEmpty) ...[
-                                  Container(
-                                    padding: const EdgeInsets.fromLTRB(
-                                        16, 16, 16, 8),
-                                    child: Row(
-                                      children: [
-                                        Icon(
-                                          Icons.group_rounded,
-                                          color: theme.primary,
-                                          size: 20,
-                                        ),
-                                        const SizedBox(width: 8),
-                                        Text(
-                                          'Pulse Group Chats',
-                                          style: theme.titleMedium.override(
-                                            fontWeight: FontWeight.w600,
-                                            color: theme.primary,
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-                                  ),
-                                  ...pulseChats.map((data) =>
-                                      _buildPulseGroupChatTile(
-                                          context, data, theme, uid)),
-                                  if (displayDirectChats.isNotEmpty)
-                                    Divider(height: 24, color: theme.alternate),
-                                ],
-
-                                // Direct Messages Section
-                                if (displayDirectChats.isNotEmpty) ...[
-                                  Container(
-                                    padding: const EdgeInsets.fromLTRB(
-                                        16, 16, 16, 8),
-                                    child: Row(
-                                      children: [
-                                        Icon(
-                                          Icons.chat_rounded,
-                                          color: theme.secondaryText,
-                                          size: 20,
-                                        ),
-                                        const SizedBox(width: 8),
-                                        Text(
-                                          'Direct Messages',
-                                          style: theme.titleMedium.override(
-                                            fontWeight: FontWeight.w600,
-                                            color: theme.secondaryText,
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-                                  ),
-                                  ...displayDirectChats.map((data) =>
-                                      _buildDirectChatTile(
-                                          context, data, theme, uid)),
-                                ],
-                              ],
+                              cacheExtent:
+                                  500, // Pre-render for smoother scrolling
+                              itemCount: items.length,
+                              itemBuilder: (context, index) => items[index],
                             );
                           },
                           loading: () =>
@@ -1445,59 +1810,134 @@ class _CreateMessageFab extends StatefulWidget {
 class _CreateMessageFabState extends State<_CreateMessageFab>
     with SingleTickerProviderStateMixin {
   bool _isOpen = false;
+  late AnimationController _animationController;
+  late Animation<double> _scaleAnimation;
+
+  @override
+  void initState() {
+    super.initState();
+    _animationController = AnimationController(
+      duration: const Duration(milliseconds: 250),
+      vsync: this,
+    );
+    _scaleAnimation = Tween<double>(begin: 0.0, end: 1.0).animate(
+      CurvedAnimation(parent: _animationController, curve: Curves.easeOutBack),
+    );
+  }
+
+  @override
+  void dispose() {
+    _animationController.dispose();
+    super.dispose();
+  }
 
   void _toggle() {
+    HapticFeedback.mediumImpact();
     setState(() {
       _isOpen = !_isOpen;
+      if (_isOpen) {
+        _animationController.forward();
+      } else {
+        _animationController.reverse();
+      }
     });
   }
 
   @override
   Widget build(BuildContext context) {
     final theme = FlutterFlowTheme.of(context);
+    final isDark = Theme.of(context).brightness == Brightness.dark;
 
     return Column(
       mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.end,
       children: [
         // Speed dial options
-        if (_isOpen) ...[
-          _buildOption(
-            label: 'New group',
-            icon: Icons.group_add,
-            onTap: () {
-              _toggle();
-              widget.onCreateGroup();
-            },
-            backgroundColor: theme.accent2,
+        AnimatedBuilder(
+          animation: _scaleAnimation,
+          builder: (context, child) {
+            return Transform.scale(
+              scale: _scaleAnimation.value,
+              alignment: Alignment.bottomRight,
+              child: Opacity(
+                opacity: _scaleAnimation.value,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.end,
+                  children: [
+                    _buildOption(
+                      label: 'New group',
+                      icon: Icons.group_add_rounded,
+                      onTap: () {
+                        _toggle();
+                        widget.onCreateGroup();
+                      },
+                      gradient: const [Color(0xFF10B981), Color(0xFF059669)],
+                    ),
+                    const SizedBox(height: 12),
+                    _buildOption(
+                      label: 'Find nearby',
+                      icon: Icons.radar_rounded,
+                      onTap: () {
+                        _toggle();
+                        widget.onFindNearby();
+                      },
+                      gradient: const [Color(0xFFF59E0B), Color(0xFFD97706)],
+                    ),
+                    const SizedBox(height: 12),
+                    _buildOption(
+                      label: 'New message',
+                      icon: Icons.chat_bubble_outline_rounded,
+                      onTap: () {
+                        _toggle();
+                        widget.onNewMessage();
+                      },
+                      gradient: const [Color(0xFF6366F1), Color(0xFF8B5CF6)],
+                    ),
+                    const SizedBox(height: 16),
+                  ],
+                ),
+              ),
+            );
+          },
+        ),
+        // Main FAB with gradient
+        Container(
+          decoration: BoxDecoration(
+            gradient: LinearGradient(
+              colors: _isOpen
+                  ? [Colors.grey.shade600, Colors.grey.shade700]
+                  : const [Color(0xFF6366F1), Color(0xFF8B5CF6)],
+            ),
+            shape: BoxShape.circle,
+            boxShadow: [
+              BoxShadow(
+                color: (_isOpen ? Colors.grey : const Color(0xFF6366F1))
+                    .withOpacity(0.4),
+                blurRadius: 16,
+                offset: const Offset(0, 6),
+              ),
+            ],
           ),
-          const SizedBox(height: 12),
-          _buildOption(
-            label: 'Find nearby',
-            icon: Icons.radar_rounded,
-            onTap: () {
-              _toggle();
-              widget.onFindNearby();
-            },
-          ),
-          const SizedBox(height: 12),
-          _buildOption(
-            label: 'New message',
-            icon: Icons.chat_bubble_outline_rounded,
-            onTap: () {
-              _toggle();
-              widget.onNewMessage();
-            },
-          ),
-          const SizedBox(height: 12),
-        ],
-        // Main FAB
-        FloatingActionButton(
-          onPressed: _toggle,
-          child: AnimatedRotation(
-            duration: const Duration(milliseconds: 200),
-            turns: _isOpen ? 0.125 : 0,
-            child: Icon(_isOpen ? Icons.close : Icons.add),
+          child: Material(
+            color: Colors.transparent,
+            child: InkWell(
+              borderRadius: BorderRadius.circular(28),
+              onTap: _toggle,
+              child: Container(
+                width: 56,
+                height: 56,
+                alignment: Alignment.center,
+                child: AnimatedRotation(
+                  duration: const Duration(milliseconds: 250),
+                  turns: _isOpen ? 0.125 : 0,
+                  child: Icon(
+                    _isOpen ? Icons.close_rounded : Icons.add_rounded,
+                    color: Colors.white,
+                    size: 28,
+                  ),
+                ),
+              ),
+            ),
           ),
         ),
       ],
@@ -1508,40 +1948,64 @@ class _CreateMessageFabState extends State<_CreateMessageFab>
     required String label,
     required IconData icon,
     required VoidCallback onTap,
-    Color? backgroundColor,
+    required List<Color> gradient,
   }) {
     final theme = FlutterFlowTheme.of(context);
+    final isDark = Theme.of(context).brightness == Brightness.dark;
 
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: [
-        Material(
-          color: Colors.transparent,
-          child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-            decoration: BoxDecoration(
-              color: theme.secondaryBackground,
-              borderRadius: BorderRadius.circular(8),
-              boxShadow: [
-                BoxShadow(
-                  color: Colors.black.withOpacity(0.1),
-                  blurRadius: 4,
-                  offset: const Offset(0, 2),
-                ),
-              ],
-            ),
-            child: Text(
-              label,
-              style: theme.bodyMedium,
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+          decoration: BoxDecoration(
+            color: isDark ? const Color(0xFF2A2A3E) : Colors.white,
+            borderRadius: BorderRadius.circular(12),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withOpacity(isDark ? 0.3 : 0.1),
+                blurRadius: 8,
+                offset: const Offset(0, 4),
+              ),
+            ],
+          ),
+          child: Text(
+            label,
+            style: theme.bodyMedium.override(
+              fontWeight: FontWeight.w600,
+              letterSpacing: -0.2,
             ),
           ),
         ),
         const SizedBox(width: 12),
-        FloatingActionButton(
-          heroTag: 'fab_$label',
-          onPressed: onTap,
-          backgroundColor: backgroundColor,
-          child: Icon(icon),
+        Container(
+          decoration: BoxDecoration(
+            gradient: LinearGradient(colors: gradient),
+            shape: BoxShape.circle,
+            boxShadow: [
+              BoxShadow(
+                color: gradient.first.withOpacity(0.4),
+                blurRadius: 12,
+                offset: const Offset(0, 4),
+              ),
+            ],
+          ),
+          child: Material(
+            color: Colors.transparent,
+            child: InkWell(
+              borderRadius: BorderRadius.circular(24),
+              onTap: () {
+                HapticFeedback.lightImpact();
+                onTap();
+              },
+              child: Container(
+                width: 48,
+                height: 48,
+                alignment: Alignment.center,
+                child: Icon(icon, color: Colors.white, size: 22),
+              ),
+            ),
+          ),
         ),
       ],
     );
@@ -2088,6 +2552,49 @@ class _NearbyUsersDialogState extends State<_NearbyUsersDialog> {
           child: const Text('Close'),
         ),
       ],
+    );
+  }
+}
+
+/// Glass-style icon button for modern app bar
+class _GlassIconButton extends StatelessWidget {
+  const _GlassIconButton({
+    required this.icon,
+    required this.onPressed,
+    required this.isDark,
+  });
+
+  final IconData icon;
+  final VoidCallback onPressed;
+  final bool isDark;
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        borderRadius: BorderRadius.circular(12),
+        onTap: onPressed,
+        child: Container(
+          padding: const EdgeInsets.all(10),
+          decoration: BoxDecoration(
+            color: isDark
+                ? Colors.white.withOpacity(0.1)
+                : Colors.black.withOpacity(0.05),
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(
+              color: isDark
+                  ? Colors.white.withOpacity(0.1)
+                  : Colors.black.withOpacity(0.05),
+            ),
+          ),
+          child: Icon(
+            icon,
+            size: 22,
+            color: isDark ? Colors.white70 : Colors.black87,
+          ),
+        ),
+      ),
     );
   }
 }

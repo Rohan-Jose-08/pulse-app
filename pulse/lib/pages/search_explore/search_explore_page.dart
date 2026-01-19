@@ -10,7 +10,6 @@ import '../search/search_widget.dart';
 import '../profile/ProfilePage.dart';
 import '../../backend/api_service.dart';
 import '../../auth/firebase_auth/auth_util.dart';
-import 'recommendations_tab.dart';
 
 class SearchExplorePage extends ConsumerStatefulWidget {
   const SearchExplorePage({super.key});
@@ -22,18 +21,15 @@ class SearchExplorePage extends ConsumerStatefulWidget {
   ConsumerState<SearchExplorePage> createState() => _SearchExplorePageState();
 }
 
-class _SearchExplorePageState extends ConsumerState<SearchExplorePage>
-    with SingleTickerProviderStateMixin {
+class _SearchExplorePageState extends ConsumerState<SearchExplorePage> {
   final TextEditingController _controller = TextEditingController();
   final FocusNode _focusNode = FocusNode();
   final ScrollController _scrollController = ScrollController();
-  late TabController _tabController;
 
   @override
   void initState() {
     super.initState();
     _scrollController.addListener(_onScroll);
-    _tabController = TabController(length: 2, vsync: this);
   }
 
   void _onScroll() {
@@ -49,7 +45,6 @@ class _SearchExplorePageState extends ConsumerState<SearchExplorePage>
     _controller.dispose();
     _focusNode.dispose();
     _scrollController.dispose();
-    _tabController.dispose();
     super.dispose();
   }
 
@@ -77,25 +72,6 @@ class _SearchExplorePageState extends ConsumerState<SearchExplorePage>
               )
             : null,
         centerTitle: true,
-        bottom: hasQuery
-            ? null
-            : TabBar(
-                controller: _tabController,
-                labelColor: theme.primary,
-                unselectedLabelColor: theme.secondaryText,
-                indicatorColor: theme.primary,
-                indicatorWeight: 3,
-                tabs: const [
-                  Tab(
-                    icon: Icon(Icons.auto_awesome),
-                    text: 'For You',
-                  ),
-                  Tab(
-                    icon: Icon(Icons.explore),
-                    text: 'Explore',
-                  ),
-                ],
-              ),
       ),
       body: GestureDetector(
         onTap: () => FocusScope.of(context).unfocus(),
@@ -115,61 +91,55 @@ class _SearchExplorePageState extends ConsumerState<SearchExplorePage>
                 error: (_, __) =>
                     const Center(child: Text('Error loading results')),
               )
-            : TabBarView(
-                controller: _tabController,
-                children: [
-                  const RecommendationsTab(),
-                  RefreshIndicator(
-                    onRefresh: () async => pagination.refresh(),
-                    color: theme.primary,
-                    backgroundColor: theme.secondaryBackground,
-                    child: CustomScrollView(
-                      controller: _scrollController,
-                      physics: const BouncingScrollPhysics(
-                          parent: AlwaysScrollableScrollPhysics()),
-                      slivers: [
-                        SliverToBoxAdapter(
-                          child: suggestionsUsers.when(
-                            data: (users) => suggestionsPulses.when(
-                              data: (pulses) => _LiveSuggestions(
-                                users: users,
-                                pulses: pulses,
-                                onSelect: (text) {
-                                  _controller.text = text;
-                                  ref.read(searchQueryProvider.notifier).state =
-                                      text;
-                                  _focusNode.unfocus();
-                                },
-                              ),
-                              loading: () => const SizedBox(height: 0),
-                              error: (_, __) => const SizedBox(height: 0),
-                            ),
-                            loading: () => const SizedBox(height: 0),
-                            error: (_, __) => const SizedBox(height: 0),
-                          ),
-                        ),
-                        SliverPadding(
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 12, vertical: 8),
-                          sliver: SliverMasonryGrid.count(
-                            crossAxisCount: 2,
-                            mainAxisSpacing: 12,
-                            crossAxisSpacing: 12,
-                            childCount: exploreItems.length,
-                            itemBuilder: (context, index) {
-                              final pulse = exploreItems[index];
-                              return _PulseGridCard(pulse: pulse);
+            : RefreshIndicator(
+                onRefresh: () async => pagination.refresh(),
+                color: theme.primary,
+                backgroundColor: theme.secondaryBackground,
+                child: CustomScrollView(
+                  controller: _scrollController,
+                  physics: const BouncingScrollPhysics(
+                      parent: AlwaysScrollableScrollPhysics()),
+                  slivers: [
+                    SliverToBoxAdapter(
+                      child: suggestionsUsers.when(
+                        data: (users) => suggestionsPulses.when(
+                          data: (pulses) => _LiveSuggestions(
+                            users: users,
+                            pulses: pulses,
+                            onSelect: (text) {
+                              _controller.text = text;
+                              ref.read(searchQueryProvider.notifier).state =
+                                  text;
+                              _focusNode.unfocus();
                             },
                           ),
+                          loading: () => const SizedBox(height: 0),
+                          error: (_, __) => const SizedBox(height: 0),
                         ),
-                        SliverToBoxAdapter(
-                          child: _LoadMoreFooter(),
-                        ),
-                        const SliverToBoxAdapter(child: SizedBox(height: 100)),
-                      ],
+                        loading: () => const SizedBox(height: 0),
+                        error: (_, __) => const SizedBox(height: 0),
+                      ),
                     ),
-                  ),
-                ],
+                    SliverPadding(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 12, vertical: 8),
+                      sliver: SliverMasonryGrid.count(
+                        crossAxisCount: 2,
+                        mainAxisSpacing: 12,
+                        crossAxisSpacing: 12,
+                        childCount: exploreItems.length,
+                        itemBuilder: (context, index) {
+                          final pulse = exploreItems[index];
+                          return _PulseGridCard(pulse: pulse);
+                        },
+                      ),
+                    ),
+                    SliverToBoxAdapter(
+                      child: _LoadMoreFooter(),
+                    ),
+                    const SliverToBoxAdapter(child: SizedBox(height: 100)),
+                  ],
+                ),
               ),
       ),
       bottomNavigationBar: const NavbarWidget(),

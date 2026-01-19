@@ -1841,16 +1841,30 @@ class _GroupChatPageState extends ConsumerState<GroupChatPage>
   String? _resolveName(String uid) {
     final m = _memberIndex[uid];
     if (m == null) return null;
+
+    // Try various name fields
+    final displayName = m['displayName']?.toString();
+    final fullName = m['fullName']?.toString();
+    final name = m['name']?.toString();
+    final username = m['username']?.toString();
+    final email = m['email']?.toString();
     final first = (m['firstName'] ?? m['first_name'])?.toString();
     final last = (m['lastName'] ?? m['last_name'])?.toString();
-    final combined =
-        [first, last].where((e) => e != null && e.isNotEmpty).join(' ');
-    return (m['displayName'] ??
-            m['fullName'] ??
-            m['username'] ??
-            m['name'] ??
-            combined)
-        .toString();
+
+    // Build full name from first/last if available
+    String? combined;
+    if (first != null || last != null) {
+      combined =
+          [first, last].where((e) => e != null && e.isNotEmpty).join(' ');
+    }
+
+    // Return first available value
+    return displayName ??
+        fullName ??
+        combined ??
+        name ??
+        username ??
+        (email != null ? email.split('@').first : null);
   }
 
   String _formatTime(DateTime dt) {

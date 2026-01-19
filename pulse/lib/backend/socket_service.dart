@@ -283,6 +283,10 @@ class SocketService {
   }
 
   void joinConversation(String conversationId) {
+    // Skip if already joined - prevents duplicate queue entries
+    if (_joinedRooms.contains(conversationId)) {
+      return;
+    }
     _joinedRooms.add(conversationId);
     _emitOrQueue('join:conversation', conversationId);
   }

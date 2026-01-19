@@ -18,6 +18,7 @@ import '/pages/pulse_detail/pulse_detail_page.dart';
 import '/pages/edit_pulse/edit_pulse_widget.dart';
 import '/pages/discovery/pulse_discovery_map_page.dart';
 import '/pages/map/dual_layer_map_page.dart';
+import '/pages/pulse_management/pulse_management_page.dart';
 // Home page imports removed as Home route is deprecated; Search is primary landing
 
 export 'package:go_router/go_router.dart';
@@ -140,6 +141,17 @@ GoRouter createRouter(AppStateNotifier appStateNotifier) => GoRouter(
                 ? extra['pulse'] as Map<String, dynamic>
                 : {'id': id};
             return EditPulseWidget(pulse: pulse);
+          },
+        ),
+        FFRoute(
+          name: PulseManagementPage.routeName,
+          path: PulseManagementPage.routePath,
+          requireAuth: true,
+          builder: (context, params) {
+            final id = params.state.allParams['id']?.toString() ?? '';
+            final extra = params.state.extraMap;
+            final pulseName = extra['pulseName'] as String?;
+            return PulseManagementPage(pulseId: id, pulseName: pulseName);
           },
         ),
         FFRoute(

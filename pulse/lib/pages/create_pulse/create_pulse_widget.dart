@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:ui';
 
 import 'package:firebase_storage/firebase_storage.dart';
 import 'package:flutter/material.dart';
@@ -6,6 +7,7 @@ import 'package:flutter/services.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:geocoding/geocoding.dart' as geocoding;
+import 'package:flutter_animate/flutter_animate.dart';
 
 import '/backend/api_service.dart';
 import '/flutter_flow/flutter_flow_google_map.dart';
@@ -350,48 +352,137 @@ class _CreatePulseWidgetState extends State<CreatePulseWidget> {
   @override
   Widget build(BuildContext context) {
     final theme = FlutterFlowTheme.of(context);
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+
     return Scaffold(
       key: scaffoldKey,
       backgroundColor: theme.primaryBackground,
-      appBar: AppBar(
-        leading: FlutterFlowIconButton(
-          borderRadius: 20,
-          buttonSize: 40,
-          icon: Icon(Icons.arrow_back_rounded,
-              color: theme.primaryText, size: 24),
-          onPressed: () => context.safePop(),
-        ),
-        backgroundColor: theme.primaryBackground,
-        elevation: 0,
-        title: Text('Create Pulse',
-            style: theme.headlineMedium.override(
-                font: GoogleFonts.interTight(fontWeight: FontWeight.w600))),
-        centerTitle: true,
-        actions: [
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16),
-            child: FFButtonWidget(
-              onPressed: _submitting ? null : _createPulse,
-              text: _submitting ? 'Saving...' : 'Create',
-              options: FFButtonOptions(
-                height: 36,
-                color: theme.accent1,
-                textStyle: theme.titleSmall.override(
-                    font: GoogleFonts.interTight(fontWeight: FontWeight.w600),
-                    color: theme.primary),
-                elevation: 0,
-                borderRadius: BorderRadius.circular(20),
+      extendBodyBehindAppBar: true,
+      appBar: PreferredSize(
+        preferredSize: const Size.fromHeight(kToolbarHeight + 10),
+        child: ClipRect(
+          child: BackdropFilter(
+            filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
+            child: Container(
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                  colors: isDark
+                      ? [
+                          const Color(0xFF1A1A2E).withOpacity(0.9),
+                          const Color(0xFF16213E).withOpacity(0.85),
+                        ]
+                      : [
+                          Colors.white.withOpacity(0.9),
+                          Colors.white.withOpacity(0.85),
+                        ],
+                ),
+                border: Border(
+                  bottom: BorderSide(
+                    color: isDark
+                        ? Colors.white.withOpacity(0.1)
+                        : Colors.black.withOpacity(0.05),
+                    width: 0.5,
+                  ),
+                ),
+              ),
+              child: SafeArea(
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(8, 8, 16, 8),
+                  child: Row(
+                    children: [
+                      IconButton(
+                        onPressed: () => context.safePop(),
+                        icon: Icon(
+                          Icons.arrow_back_rounded,
+                          color: theme.primaryText,
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: ShaderMask(
+                          shaderCallback: (bounds) => const LinearGradient(
+                            colors: [Color(0xFFEC4899), Color(0xFFF43F5E)],
+                          ).createShader(bounds),
+                          child: Text(
+                            'Create Pulse',
+                            style: theme.headlineSmall.override(
+                              font: GoogleFonts.interTight(
+                                  fontWeight: FontWeight.w700),
+                              color: Colors.white,
+                              letterSpacing: -0.5,
+                            ),
+                          ),
+                        ),
+                      ),
+                      Container(
+                        decoration: BoxDecoration(
+                          gradient: _submitting
+                              ? LinearGradient(
+                                  colors: [
+                                    const Color(0xFFEC4899).withOpacity(0.5),
+                                    const Color(0xFFF43F5E).withOpacity(0.5),
+                                  ],
+                                )
+                              : const LinearGradient(
+                                  colors: [
+                                    Color(0xFFEC4899),
+                                    Color(0xFFF43F5E)
+                                  ],
+                                ),
+                          borderRadius: BorderRadius.circular(20),
+                          boxShadow: _submitting
+                              ? []
+                              : [
+                                  BoxShadow(
+                                    color: const Color(0xFFEC4899)
+                                        .withOpacity(0.4),
+                                    blurRadius: 12,
+                                    offset: const Offset(0, 4),
+                                  ),
+                                ],
+                        ),
+                        child: Material(
+                          color: Colors.transparent,
+                          child: InkWell(
+                            borderRadius: BorderRadius.circular(20),
+                            onTap: _submitting
+                                ? null
+                                : () {
+                                    HapticFeedback.lightImpact();
+                                    _createPulse();
+                                  },
+                            child: Padding(
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 18, vertical: 10),
+                              child: Text(
+                                _submitting ? 'Saving...' : 'Create',
+                                style: GoogleFonts.inter(
+                                  color: Colors.white,
+                                  fontWeight: FontWeight.w600,
+                                  fontSize: 14,
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
               ),
             ),
-          )
-        ],
+          ),
+        ),
       ),
       body: SafeArea(
+        top: false,
         child: Stack(children: [
           SingleChildScrollView(
             padding: EdgeInsets.fromLTRB(
               20,
-              12,
+              kToolbarHeight + 30,
               20,
               40 + MediaQuery.viewInsetsOf(context).bottom,
             ),
@@ -939,33 +1030,89 @@ class _CreatePulseWidgetState extends State<CreatePulseWidget> {
                     ],
                   ),
                 ),
-                const SizedBox(height: 24),
+                const SizedBox(height: 32),
                 // Submit Button
-                FFButtonWidget(
-                  onPressed: _submitting ? null : _createPulse,
-                  text: _submitting ? 'Creating...' : 'Create Pulse',
-                  icon: _submitting
-                      ? const SizedBox(
-                          height: 20,
-                          width: 20,
-                          child: CircularProgressIndicator(
-                            strokeWidth: 2,
-                            valueColor: AlwaysStoppedAnimation(Colors.white),
+                Container(
+                  decoration: BoxDecoration(
+                    gradient: _submitting
+                        ? LinearGradient(
+                            colors: [
+                              const Color(0xFFEC4899).withOpacity(0.5),
+                              const Color(0xFFF43F5E).withOpacity(0.5),
+                            ],
+                          )
+                        : const LinearGradient(
+                            begin: Alignment.topLeft,
+                            end: Alignment.bottomRight,
+                            colors: [Color(0xFFEC4899), Color(0xFFF43F5E)],
                           ),
-                        )
-                      : const Icon(Icons.add_rounded, size: 24),
-                  options: FFButtonOptions(
-                    height: 56,
-                    width: double.infinity,
-                    color: theme.primary,
-                    textStyle: theme.titleMedium.override(
-                      font: GoogleFonts.interTight(fontWeight: FontWeight.w600),
-                      color: Colors.white,
-                    ),
-                    elevation: 2,
-                    borderRadius: BorderRadius.circular(12),
+                    borderRadius: BorderRadius.circular(16),
+                    boxShadow: _submitting
+                        ? []
+                        : [
+                            BoxShadow(
+                              color: const Color(0xFFEC4899).withOpacity(0.4),
+                              blurRadius: 20,
+                              offset: const Offset(0, 8),
+                            ),
+                          ],
                   ),
-                ),
+                  child: Material(
+                    color: Colors.transparent,
+                    child: InkWell(
+                      borderRadius: BorderRadius.circular(16),
+                      onTap: _submitting
+                          ? null
+                          : () {
+                              HapticFeedback.mediumImpact();
+                              _createPulse();
+                            },
+                      child: Container(
+                        height: 60,
+                        width: double.infinity,
+                        alignment: Alignment.center,
+                        child: Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            if (_submitting)
+                              const SizedBox(
+                                height: 22,
+                                width: 22,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2.5,
+                                  valueColor:
+                                      AlwaysStoppedAnimation(Colors.white),
+                                ),
+                              )
+                            else
+                              Container(
+                                padding: const EdgeInsets.all(6),
+                                decoration: BoxDecoration(
+                                  color: Colors.white.withOpacity(0.2),
+                                  borderRadius: BorderRadius.circular(8),
+                                ),
+                                child: const Icon(
+                                  Icons.bolt_rounded,
+                                  size: 20,
+                                  color: Colors.white,
+                                ),
+                              ),
+                            const SizedBox(width: 12),
+                            Text(
+                              _submitting ? 'Creating...' : 'Create Pulse',
+                              style: GoogleFonts.interTight(
+                                fontSize: 18,
+                                fontWeight: FontWeight.w600,
+                                color: Colors.white,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                ).animate(delay: 200.ms).fadeIn().slideY(begin: 0.2, end: 0),
+                const SizedBox(height: 20),
               ],
             ),
           ), // end SingleChildScrollView
@@ -975,7 +1122,66 @@ class _CreatePulseWidgetState extends State<CreatePulseWidget> {
                 child: AnimatedOpacity(
                   opacity: _submitting ? 1 : 0,
                   duration: const Duration(milliseconds: 250),
-                  child: Container(color: Colors.black26),
+                  child: BackdropFilter(
+                    filter: ImageFilter.blur(sigmaX: 3, sigmaY: 3),
+                    child: Container(
+                      color: Colors.black.withOpacity(0.3),
+                      child: Center(
+                        child: Container(
+                          padding: const EdgeInsets.all(24),
+                          decoration: BoxDecoration(
+                            gradient: const LinearGradient(
+                              begin: Alignment.topLeft,
+                              end: Alignment.bottomRight,
+                              colors: [Color(0xFF1A1A2E), Color(0xFF16213E)],
+                            ),
+                            borderRadius: BorderRadius.circular(20),
+                            boxShadow: [
+                              BoxShadow(
+                                color: Colors.black.withOpacity(0.3),
+                                blurRadius: 20,
+                              ),
+                            ],
+                          ),
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Container(
+                                padding: const EdgeInsets.all(16),
+                                decoration: BoxDecoration(
+                                  gradient: LinearGradient(
+                                    colors: [
+                                      const Color(0xFFEC4899).withOpacity(0.2),
+                                      const Color(0xFFF43F5E).withOpacity(0.2),
+                                    ],
+                                  ),
+                                  shape: BoxShape.circle,
+                                ),
+                                child: const SizedBox(
+                                  height: 32,
+                                  width: 32,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 3,
+                                    valueColor: AlwaysStoppedAnimation(
+                                        Color(0xFFEC4899)),
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(height: 16),
+                              Text(
+                                'Creating Pulse...',
+                                style: GoogleFonts.interTight(
+                                  fontSize: 16,
+                                  fontWeight: FontWeight.w600,
+                                  color: Colors.white,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
                 ),
               ),
             ),
@@ -989,16 +1195,62 @@ class _CreatePulseWidgetState extends State<CreatePulseWidget> {
 class _SectionCard extends StatelessWidget {
   final String label;
   final Widget child;
-  const _SectionCard({required this.label, required this.child});
+  final IconData? icon;
+  const _SectionCard({required this.label, required this.child, this.icon});
   @override
   Widget build(BuildContext context) {
     final t = FlutterFlowTheme.of(context);
+    final isDark = Theme.of(context).brightness == Brightness.dark;
     return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-      Text(label,
-          style: t.titleMedium.override(
-              font: GoogleFonts.interTight(fontWeight: FontWeight.w600))),
-      const SizedBox(height: 8),
-      child,
+      Row(
+        children: [
+          if (icon != null) ...[
+            Container(
+              padding: const EdgeInsets.all(6),
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  colors: [
+                    const Color(0xFF6366F1).withOpacity(0.15),
+                    const Color(0xFF8B5CF6).withOpacity(0.15),
+                  ],
+                ),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Icon(
+                icon,
+                size: 16,
+                color: const Color(0xFF6366F1),
+              ),
+            ),
+            const SizedBox(width: 10),
+          ],
+          Text(label,
+              style: t.titleMedium.override(
+                  font: GoogleFonts.interTight(fontWeight: FontWeight.w600))),
+        ],
+      ),
+      const SizedBox(height: 12),
+      Container(
+        decoration: BoxDecoration(
+          color:
+              isDark ? const Color(0xFF1A1A2E).withOpacity(0.5) : Colors.white,
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(
+            color: isDark
+                ? Colors.white.withOpacity(0.1)
+                : Colors.black.withOpacity(0.05),
+          ),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withOpacity(isDark ? 0.2 : 0.05),
+              blurRadius: 10,
+              offset: const Offset(0, 2),
+            ),
+          ],
+        ),
+        padding: const EdgeInsets.all(16),
+        child: child,
+      ),
     ]);
   }
 }
@@ -1009,34 +1261,85 @@ class _ExpandableCard extends StatelessWidget {
   final VoidCallback onToggle;
   final Widget child;
   final Widget? action;
+  final IconData? icon;
   const _ExpandableCard(
       {required this.label,
       required this.expanded,
       required this.onToggle,
       required this.child,
-      this.action});
+      this.action,
+      this.icon});
   @override
   Widget build(BuildContext context) {
     final t = FlutterFlowTheme.of(context);
+    final isDark = Theme.of(context).brightness == Brightness.dark;
     return AnimatedContainer(
       duration: const Duration(milliseconds: 250),
       decoration: BoxDecoration(
-          color: t.secondaryBackground,
-          border: Border.all(color: t.alternate),
-          borderRadius: BorderRadius.circular(16)),
-      padding: const EdgeInsets.fromLTRB(16, 14, 16, 14),
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: isDark
+              ? [
+                  const Color(0xFF1A1A2E).withOpacity(0.8),
+                  const Color(0xFF16213E).withOpacity(0.6),
+                ]
+              : [
+                  Colors.white,
+                  Colors.grey.shade50,
+                ],
+        ),
+        border: Border.all(
+          color: expanded
+              ? const Color(0xFF6366F1).withOpacity(0.3)
+              : (isDark
+                  ? Colors.white.withOpacity(0.1)
+                  : Colors.black.withOpacity(0.05)),
+          width: expanded ? 1.5 : 1,
+        ),
+        borderRadius: BorderRadius.circular(20),
+        boxShadow: [
+          BoxShadow(
+            color: expanded
+                ? const Color(0xFF6366F1).withOpacity(0.1)
+                : Colors.black.withOpacity(isDark ? 0.2 : 0.05),
+            blurRadius: expanded ? 16 : 10,
+            offset: const Offset(0, 4),
+          ),
+        ],
+      ),
+      padding: const EdgeInsets.fromLTRB(16, 16, 16, 16),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         Row(children: [
           Expanded(
             child: GestureDetector(
-              onTap: onToggle,
+              onTap: () {
+                HapticFeedback.selectionClick();
+                onToggle();
+              },
               child: Row(children: [
-                AnimatedRotation(
-                    turns: expanded ? 0 : -0.25,
-                    duration: const Duration(milliseconds: 200),
-                    child: Icon(Icons.keyboard_arrow_down_rounded,
-                        color: t.primary, size: 22)),
-                const SizedBox(width: 4),
+                Container(
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    gradient: LinearGradient(
+                      colors: [
+                        const Color(0xFF6366F1).withOpacity(0.15),
+                        const Color(0xFF8B5CF6).withOpacity(0.15),
+                      ],
+                    ),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: AnimatedRotation(
+                      turns: expanded ? 0 : -0.25,
+                      duration: const Duration(milliseconds: 200),
+                      child: const Icon(Icons.keyboard_arrow_down_rounded,
+                          color: Color(0xFF6366F1), size: 20)),
+                ),
+                const SizedBox(width: 12),
+                if (icon != null) ...[
+                  Icon(icon, color: t.secondaryText, size: 18),
+                  const SizedBox(width: 8),
+                ],
                 Text(label,
                     style: t.titleMedium.override(
                         font: GoogleFonts.interTight(
@@ -1049,7 +1352,7 @@ class _ExpandableCard extends StatelessWidget {
         AnimatedCrossFade(
           firstChild: const SizedBox.shrink(),
           secondChild:
-              Padding(padding: const EdgeInsets.only(top: 12), child: child),
+              Padding(padding: const EdgeInsets.only(top: 16), child: child),
           crossFadeState:
               expanded ? CrossFadeState.showSecond : CrossFadeState.showFirst,
           duration: const Duration(milliseconds: 250),
@@ -1066,28 +1369,83 @@ class _DateTimeField extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final t = FlutterFlowTheme.of(context);
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final hasValue = dateTime != null;
     return InkWell(
-      onTap: onTap,
+      onTap: () {
+        HapticFeedback.selectionClick();
+        onTap();
+      },
+      borderRadius: BorderRadius.circular(14),
       child: Container(
         height: 56,
         decoration: BoxDecoration(
-            color: t.secondaryBackground,
-            borderRadius: BorderRadius.circular(12),
-            border: Border.all(color: t.alternate)),
-        padding: const EdgeInsets.symmetric(horizontal: 12),
+          gradient: LinearGradient(
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+            colors: hasValue
+                ? [
+                    const Color(0xFF6366F1).withOpacity(isDark ? 0.15 : 0.08),
+                    const Color(0xFF8B5CF6).withOpacity(isDark ? 0.1 : 0.05),
+                  ]
+                : isDark
+                    ? [
+                        const Color(0xFF1A1A2E),
+                        const Color(0xFF16213E),
+                      ]
+                    : [
+                        Colors.grey.shade50,
+                        Colors.grey.shade100,
+                      ],
+          ),
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(
+            color: hasValue
+                ? const Color(0xFF6366F1).withOpacity(0.3)
+                : (isDark
+                    ? Colors.white.withOpacity(0.1)
+                    : Colors.black.withOpacity(0.08)),
+          ),
+        ),
+        padding: const EdgeInsets.symmetric(horizontal: 14),
         child: Row(children: [
+          Container(
+            padding: const EdgeInsets.all(8),
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                colors: [
+                  const Color(0xFF6366F1).withOpacity(0.15),
+                  const Color(0xFF8B5CF6).withOpacity(0.15),
+                ],
+              ),
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: const Icon(
+              Icons.calendar_today_rounded,
+              color: Color(0xFF6366F1),
+              size: 18,
+            ),
+          ),
+          const SizedBox(width: 12),
           Expanded(
             child: Text(
               dateTime != null
                   ? dateTimeFormat('MMM d, y - h:mm a', dateTime)
-                  : 'Date & time',
+                  : 'Select date & time',
               style: t.bodyMedium.override(
-                  font: GoogleFonts.inter(),
-                  color: dateTime != null ? t.primaryText : t.secondaryText),
+                font: GoogleFonts.inter(),
+                color: dateTime != null ? t.primaryText : t.secondaryText,
+                fontWeight:
+                    dateTime != null ? FontWeight.w500 : FontWeight.normal,
+              ),
               overflow: TextOverflow.ellipsis,
             ),
           ),
-          Icon(Icons.calendar_today_rounded, color: t.primary, size: 22)
+          Icon(
+            Icons.chevron_right_rounded,
+            color: t.secondaryText.withOpacity(0.5),
+            size: 20,
+          ),
         ]),
       ),
     );
@@ -1101,14 +1459,49 @@ class _CharCount extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final t = FlutterFlowTheme.of(context);
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final ratio = current / max;
+    final isNearLimit = ratio > 0.8;
+    final isAtLimit = ratio >= 1.0;
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
       decoration: BoxDecoration(
-          color: t.secondaryBackground.withOpacity(0.9),
-          borderRadius: BorderRadius.circular(12)),
-      child: Text('$current/$max',
-          style: t.bodySmall.override(
-              font: GoogleFonts.inter(fontSize: 11), color: t.secondaryText)),
+        gradient: LinearGradient(
+          colors: isAtLimit
+              ? [
+                  const Color(0xFFEF4444).withOpacity(0.15),
+                  const Color(0xFFDC2626).withOpacity(0.15)
+                ]
+              : isNearLimit
+                  ? [
+                      const Color(0xFFF59E0B).withOpacity(0.15),
+                      const Color(0xFFD97706).withOpacity(0.15)
+                    ]
+                  : [
+                      (isDark ? Colors.white : Colors.black).withOpacity(0.05),
+                      (isDark ? Colors.white : Colors.black).withOpacity(0.08),
+                    ],
+        ),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(
+          color: isAtLimit
+              ? const Color(0xFFEF4444).withOpacity(0.3)
+              : isNearLimit
+                  ? const Color(0xFFF59E0B).withOpacity(0.3)
+                  : Colors.transparent,
+        ),
+      ),
+      child: Text(
+        '$current/$max',
+        style: t.bodySmall.override(
+          font: GoogleFonts.inter(fontSize: 11, fontWeight: FontWeight.w500),
+          color: isAtLimit
+              ? const Color(0xFFEF4444)
+              : isNearLimit
+                  ? const Color(0xFFF59E0B)
+                  : t.secondaryText,
+        ),
+      ),
     );
   }
 }
@@ -1120,8 +1513,63 @@ class _LocationChip extends StatelessWidget {
   const _LocationChip(
       {required this.lat, required this.lng, required this.onClear});
   @override
-  Widget build(BuildContext context) => Chip(
-      label: Text('${lat.toStringAsFixed(4)}, ${lng.toStringAsFixed(4)}'),
-      deleteIcon: const Icon(Icons.close, size: 16),
-      onDeleted: onClear);
+  Widget build(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    return Container(
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          colors: [
+            const Color(0xFF10B981).withOpacity(0.15),
+            const Color(0xFF059669).withOpacity(0.15),
+          ],
+        ),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(
+          color: const Color(0xFF10B981).withOpacity(0.3),
+        ),
+      ),
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          borderRadius: BorderRadius.circular(20),
+          onTap: onClear,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(
+                  Icons.location_on_rounded,
+                  color: Color(0xFF10B981),
+                  size: 16,
+                ),
+                const SizedBox(width: 6),
+                Text(
+                  '${lat.toStringAsFixed(4)}, ${lng.toStringAsFixed(4)}',
+                  style: GoogleFonts.inter(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w500,
+                    color: const Color(0xFF10B981),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Container(
+                  padding: const EdgeInsets.all(2),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF10B981).withOpacity(0.2),
+                    shape: BoxShape.circle,
+                  ),
+                  child: const Icon(
+                    Icons.close_rounded,
+                    size: 14,
+                    color: Color(0xFF10B981),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
 }

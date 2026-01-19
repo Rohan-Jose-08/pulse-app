@@ -1,17 +1,161 @@
 import 'dart:convert';
+import 'dart:async';
+import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import '../auth/firebase_auth/auth_util.dart';
 import '../auth/firebase_auth/firebase_user_provider.dart';
 import 'config.dart';
 
+/// Cached response model
+class CachedResponse {
+  final dynamic data;
+  final DateTime expiresAt;
+
+  CachedResponse({
+    required this.data,
+    required this.expiresAt,
+  });
+}
+
 class ApiService {
   static final ApiService instance = ApiService._();
   ApiService._() {
     _client = http.Client();
+    _initCache();
   } // private constructor
 
   static String get _baseUrl => getBackendHttpBase();
   late final http.Client _client;
+
+  // Response cache for performance
+  final Map<String, CachedResponse> _cache = {};
+  static const Duration _cacheDuration = Duration(minutes: 5);
+
+  void _initCache() {
+    // Clean expired cache entries every 2 minutes
+    Timer.periodic(const Duration(minutes: 2), (_) {
+      _cleanExpiredCache();
+    });
+  }
+
+  void _cleanExpiredCache() {
+    final now = DateTime.now();
+    _cache.removeWhere((key, value) => value.expiresAt.isBefore(now));
+  }
+
+  CachedResponse? _getCached(String key) {
+    final cached = _cache[key];
+    if (cached != null && cached.expiresAt.isAfter(DateTime.now())) {
+      return cached;
+    }
+    _cache.remove(key);
+    return null;
+  }
+
+  void _setCached(String key, dynamic data) {
+    _cache[key] = CachedResponse(
+      data: data,
+      expiresAt: DateTime.now().add(_cacheDuration),
+    );
+  }
+
+  void clearCache() {
+    _cache.clear();
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Generic HTTP helper methods for use by other services
+  // ─────────────────────────────────────────────────────────────────────────
+
+  /// Generic GET request
+  Future<dynamic> get(String path) async {
+    try {
+      final token = await _getAuthToken();
+      final url = '$_baseUrl$path';
+      final response = await _client.get(
+        Uri.parse(url),
+        headers: _getHeaders(token),
+      );
+
+      if (response.statusCode >= 200 && response.statusCode < 300) {
+        return jsonDecode(response.body);
+      } else {
+        throw Exception('GET $path failed: ${response.statusCode}');
+      }
+    } catch (e) {
+      debugPrint('GET $path error: $e');
+      rethrow;
+    }
+  }
+
+  /// Generic POST request
+  Future<dynamic> post(String path, Map<String, dynamic> body) async {
+    try {
+      final token = await _getAuthToken();
+      final url = '$_baseUrl$path';
+      final response = await _client.post(
+        Uri.parse(url),
+        headers: _getHeaders(token),
+        body: jsonEncode(body),
+      );
+
+      if (response.statusCode >= 200 && response.statusCode < 300) {
+        return jsonDecode(response.body);
+      } else {
+        debugPrint('POST $path response body: ${response.body}');
+        throw Exception('POST $path failed: ${response.statusCode}');
+      }
+    } catch (e) {
+      debugPrint('POST $path error: $e');
+      rethrow;
+    }
+  }
+
+  /// Generic PUT request
+  Future<dynamic> put(String path, Map<String, dynamic> body) async {
+    try {
+      final token = await _getAuthToken();
+      final url = '$_baseUrl$path';
+      final response = await _client.put(
+        Uri.parse(url),
+        headers: _getHeaders(token),
+        body: jsonEncode(body),
+      );
+
+      if (response.statusCode >= 200 && response.statusCode < 300) {
+        return jsonDecode(response.body);
+      } else {
+        throw Exception('PUT $path failed: ${response.statusCode}');
+      }
+    } catch (e) {
+      debugPrint('PUT $path error: $e');
+      rethrow;
+    }
+  }
+
+  /// Generic DELETE request
+  Future<dynamic> delete(String path) async {
+    try {
+      final token = await _getAuthToken();
+      final url = '$_baseUrl$path';
+      final response = await _client.delete(
+        Uri.parse(url),
+        headers: _getHeaders(token),
+      );
+
+      if (response.statusCode >= 200 && response.statusCode < 300) {
+        if (response.body.isNotEmpty) {
+          return jsonDecode(response.body);
+        }
+        return {'success': true};
+      } else {
+        throw Exception('DELETE $path failed: ${response.statusCode}');
+      }
+    } catch (e) {
+      debugPrint('DELETE $path error: $e');
+      rethrow;
+    }
+  }
 
   Future<String?> _getAuthToken() async {
     // Get Firebase ID token for authentication
@@ -239,7 +383,17 @@ class ApiService {
     }
   }
 
-  Future<Map<String, dynamic>?> getPulseById(String pulseId) async {
+  Future<Map<String, dynamic>?> getPulseById(String pulseId,
+      {bool forceRefresh = false}) async {
+    // Check cache first (unless forced refresh)
+    final cacheKey = 'pulse_$pulseId';
+    if (!forceRefresh) {
+      final cached = _getCached(cacheKey);
+      if (cached != null) {
+        return cached.data as Map<String, dynamic>?;
+      }
+    }
+
     // Ensure user exists in backend before fetching pulse
     final userExists = await ensureUserExists();
     if (!userExists) {
@@ -278,6 +432,8 @@ class ApiService {
           if (data['title'] == null) {
             print('Warning: Pulse data missing title field');
           }
+          // Cache the result
+          _setCached(cacheKey, data);
           return data;
         } else {
           print('Error: Pulse data is not a Map<String, dynamic>');
@@ -298,6 +454,16 @@ class ApiService {
       print('Error fetching pulse: $e');
       return null;
     }
+  }
+
+  /// Invalidate cache for a specific pulse (call after updates)
+  void invalidatePulseCache(String pulseId) {
+    _cache.remove('pulse_$pulseId');
+  }
+
+  /// Invalidate all pulse-related caches
+  void invalidateAllPulseCaches() {
+    _cache.removeWhere((key, value) => key.startsWith('pulse_'));
   }
 
   /// Reverse geocode a geohash to a human friendly label + raw address (backend caches & best-effort)
@@ -579,6 +745,449 @@ class ApiService {
       return null;
     }
   }
+
+  // ============================================================================
+  // PULSE ADMIN / MEMBER MANAGEMENT APIs
+  // ============================================================================
+
+  /// Get all members of a pulse with their roles and permissions
+  Future<Map<String, dynamic>?> getPulseMembers(String pulseId) async {
+    final userExists = await ensureUserExists();
+    if (!userExists) {
+      print('Cannot fetch pulse members: User not registered in backend');
+      return null;
+    }
+
+    try {
+      final token = await _getAuthToken();
+      if (token == null) {
+        print('No authentication token available');
+        return null;
+      }
+
+      final url = '$_baseUrl/pulses/$pulseId/members';
+      final response = await _client.get(
+        Uri.parse(url),
+        headers: _getHeaders(token),
+      );
+
+      if (response.statusCode == 200) {
+        return jsonDecode(response.body) as Map<String, dynamic>;
+      } else {
+        print(
+            'Failed to fetch pulse members: ${response.statusCode} - ${response.body}');
+        return null;
+      }
+    } catch (e) {
+      print('Error fetching pulse members: $e');
+      return null;
+    }
+  }
+
+  /// Update a member's role in a pulse (requires ADMIN+)
+  /// Role must be one of: ADMIN, MODERATOR, MEMBER
+  Future<Map<String, dynamic>?> updateMemberRole({
+    required String pulseId,
+    required String userId,
+    required String role,
+  }) async {
+    final userExists = await ensureUserExists();
+    if (!userExists) return null;
+
+    try {
+      final token = await _getAuthToken();
+      if (token == null) return null;
+
+      final url = '$_baseUrl/pulses/$pulseId/members/$userId/role';
+      final response = await _client.post(
+        Uri.parse(url),
+        headers: _getHeaders(token),
+        body: jsonEncode({'role': role}),
+      );
+
+      if (response.statusCode == 200) {
+        return jsonDecode(response.body) as Map<String, dynamic>;
+      } else {
+        print(
+            'Failed to update member role: ${response.statusCode} - ${response.body}');
+        final error = jsonDecode(response.body);
+        return {
+          'success': false,
+          'error': error['error'] ?? 'Failed to update role'
+        };
+      }
+    } catch (e) {
+      print('Error updating member role: $e');
+      return {'success': false, 'error': e.toString()};
+    }
+  }
+
+  /// Remove a member from a pulse (kick)
+  Future<Map<String, dynamic>?> removePulseMember({
+    required String pulseId,
+    required String userId,
+    String? reason,
+  }) async {
+    final userExists = await ensureUserExists();
+    if (!userExists) return null;
+
+    try {
+      final token = await _getAuthToken();
+      if (token == null) return null;
+
+      final url = '$_baseUrl/pulses/$pulseId/members/$userId/remove';
+      final response = await _client.post(
+        Uri.parse(url),
+        headers: _getHeaders(token),
+        body: jsonEncode({'reason': reason}),
+      );
+
+      if (response.statusCode == 200) {
+        return jsonDecode(response.body) as Map<String, dynamic>;
+      } else {
+        print(
+            'Failed to remove member: ${response.statusCode} - ${response.body}');
+        final error = jsonDecode(response.body);
+        return {
+          'success': false,
+          'error': error['error'] ?? 'Failed to remove member'
+        };
+      }
+    } catch (e) {
+      print('Error removing member: $e');
+      return {'success': false, 'error': e.toString()};
+    }
+  }
+
+  /// Ban a member from a pulse
+  Future<Map<String, dynamic>?> banPulseMember({
+    required String pulseId,
+    required String userId,
+    String? reason,
+  }) async {
+    final userExists = await ensureUserExists();
+    if (!userExists) return null;
+
+    try {
+      final token = await _getAuthToken();
+      if (token == null) return null;
+
+      final url = '$_baseUrl/pulses/$pulseId/members/$userId/ban';
+      final response = await _client.post(
+        Uri.parse(url),
+        headers: _getHeaders(token),
+        body: jsonEncode({'reason': reason}),
+      );
+
+      if (response.statusCode == 200) {
+        return jsonDecode(response.body) as Map<String, dynamic>;
+      } else {
+        print(
+            'Failed to ban member: ${response.statusCode} - ${response.body}');
+        final error = jsonDecode(response.body);
+        return {
+          'success': false,
+          'error': error['error'] ?? 'Failed to ban member'
+        };
+      }
+    } catch (e) {
+      print('Error banning member: $e');
+      return {'success': false, 'error': e.toString()};
+    }
+  }
+
+  /// Unban a member from a pulse
+  Future<Map<String, dynamic>?> unbanPulseMember({
+    required String pulseId,
+    required String userId,
+  }) async {
+    final userExists = await ensureUserExists();
+    if (!userExists) return null;
+
+    try {
+      final token = await _getAuthToken();
+      if (token == null) return null;
+
+      final url = '$_baseUrl/pulses/$pulseId/members/$userId/unban';
+      final response = await _client.post(
+        Uri.parse(url),
+        headers: _getHeaders(token),
+      );
+
+      if (response.statusCode == 200) {
+        return jsonDecode(response.body) as Map<String, dynamic>;
+      } else {
+        print(
+            'Failed to unban member: ${response.statusCode} - ${response.body}');
+        final error = jsonDecode(response.body);
+        return {
+          'success': false,
+          'error': error['error'] ?? 'Failed to unban member'
+        };
+      }
+    } catch (e) {
+      print('Error unbanning member: $e');
+      return {'success': false, 'error': e.toString()};
+    }
+  }
+
+  /// Mute a member in pulse chat
+  Future<Map<String, dynamic>?> mutePulseMember({
+    required String pulseId,
+    required String userId,
+  }) async {
+    final userExists = await ensureUserExists();
+    if (!userExists) return null;
+
+    try {
+      final token = await _getAuthToken();
+      if (token == null) return null;
+
+      final url = '$_baseUrl/pulses/$pulseId/members/$userId/mute';
+      final response = await _client.post(
+        Uri.parse(url),
+        headers: _getHeaders(token),
+      );
+
+      if (response.statusCode == 200) {
+        return jsonDecode(response.body) as Map<String, dynamic>;
+      } else {
+        final error = jsonDecode(response.body);
+        return {
+          'success': false,
+          'error': error['error'] ?? 'Failed to mute member'
+        };
+      }
+    } catch (e) {
+      print('Error muting member: $e');
+      return {'success': false, 'error': e.toString()};
+    }
+  }
+
+  /// Unmute a member in pulse chat
+  Future<Map<String, dynamic>?> unmutePulseMember({
+    required String pulseId,
+    required String userId,
+  }) async {
+    final userExists = await ensureUserExists();
+    if (!userExists) return null;
+
+    try {
+      final token = await _getAuthToken();
+      if (token == null) return null;
+
+      final url = '$_baseUrl/pulses/$pulseId/members/$userId/unmute';
+      final response = await _client.post(
+        Uri.parse(url),
+        headers: _getHeaders(token),
+      );
+
+      if (response.statusCode == 200) {
+        return jsonDecode(response.body) as Map<String, dynamic>;
+      } else {
+        final error = jsonDecode(response.body);
+        return {
+          'success': false,
+          'error': error['error'] ?? 'Failed to unmute member'
+        };
+      }
+    } catch (e) {
+      print('Error unmuting member: $e');
+      return {'success': false, 'error': e.toString()};
+    }
+  }
+
+  /// Update pulse settings (allowGuestInvites, requireApproval)
+  Future<Map<String, dynamic>?> updatePulseSettings({
+    required String pulseId,
+    bool? allowGuestInvites,
+    bool? requireApproval,
+  }) async {
+    final userExists = await ensureUserExists();
+    if (!userExists) return null;
+
+    try {
+      final token = await _getAuthToken();
+      if (token == null) return null;
+
+      final url = '$_baseUrl/pulses/$pulseId/settings';
+      final response = await _client.put(
+        Uri.parse(url),
+        headers: _getHeaders(token),
+        body: jsonEncode({
+          if (allowGuestInvites != null) 'allowGuestInvites': allowGuestInvites,
+          if (requireApproval != null) 'requireApproval': requireApproval,
+        }),
+      );
+
+      if (response.statusCode == 200) {
+        return jsonDecode(response.body) as Map<String, dynamic>;
+      } else {
+        final error = jsonDecode(response.body);
+        return {
+          'success': false,
+          'error': error['error'] ?? 'Failed to update settings'
+        };
+      }
+    } catch (e) {
+      print('Error updating pulse settings: $e');
+      return {'success': false, 'error': e.toString()};
+    }
+  }
+
+  /// Archive a pulse (soft delete)
+  Future<Map<String, dynamic>?> archivePulse(String pulseId) async {
+    final userExists = await ensureUserExists();
+    if (!userExists) return null;
+
+    try {
+      final token = await _getAuthToken();
+      if (token == null) return null;
+
+      final url = '$_baseUrl/pulses/$pulseId/archive';
+      final response = await _client.post(
+        Uri.parse(url),
+        headers: _getHeaders(token),
+      );
+
+      if (response.statusCode == 200) {
+        return jsonDecode(response.body) as Map<String, dynamic>;
+      } else {
+        final error = jsonDecode(response.body);
+        return {
+          'success': false,
+          'error': error['error'] ?? 'Failed to archive pulse'
+        };
+      }
+    } catch (e) {
+      print('Error archiving pulse: $e');
+      return {'success': false, 'error': e.toString()};
+    }
+  }
+
+  /// Unarchive a pulse
+  Future<Map<String, dynamic>?> unarchivePulse(String pulseId) async {
+    final userExists = await ensureUserExists();
+    if (!userExists) return null;
+
+    try {
+      final token = await _getAuthToken();
+      if (token == null) return null;
+
+      final url = '$_baseUrl/pulses/$pulseId/unarchive';
+      final response = await _client.post(
+        Uri.parse(url),
+        headers: _getHeaders(token),
+      );
+
+      if (response.statusCode == 200) {
+        return jsonDecode(response.body) as Map<String, dynamic>;
+      } else {
+        final error = jsonDecode(response.body);
+        return {
+          'success': false,
+          'error': error['error'] ?? 'Failed to unarchive pulse'
+        };
+      }
+    } catch (e) {
+      print('Error unarchiving pulse: $e');
+      return {'success': false, 'error': e.toString()};
+    }
+  }
+
+  /// Permanently delete a pulse (owner only)
+  Future<Map<String, dynamic>?> deletePulse(String pulseId) async {
+    final userExists = await ensureUserExists();
+    if (!userExists) return null;
+
+    try {
+      final token = await _getAuthToken();
+      if (token == null) return null;
+
+      final url = '$_baseUrl/pulses/$pulseId';
+      final response = await _client.delete(
+        Uri.parse(url),
+        headers: _getHeaders(token),
+      );
+
+      if (response.statusCode == 200) {
+        return jsonDecode(response.body) as Map<String, dynamic>;
+      } else {
+        final error = jsonDecode(response.body);
+        return {
+          'success': false,
+          'error': error['error'] ?? 'Failed to delete pulse'
+        };
+      }
+    } catch (e) {
+      print('Error deleting pulse: $e');
+      return {'success': false, 'error': e.toString()};
+    }
+  }
+
+  /// Transfer pulse ownership to another member
+  Future<Map<String, dynamic>?> transferPulseOwnership({
+    required String pulseId,
+    required String newOwnerId,
+  }) async {
+    final userExists = await ensureUserExists();
+    if (!userExists) return null;
+
+    try {
+      final token = await _getAuthToken();
+      if (token == null) return null;
+
+      final url = '$_baseUrl/pulses/$pulseId/transfer-ownership';
+      final response = await _client.post(
+        Uri.parse(url),
+        headers: _getHeaders(token),
+        body: jsonEncode({'newOwnerId': newOwnerId}),
+      );
+
+      if (response.statusCode == 200) {
+        return jsonDecode(response.body) as Map<String, dynamic>;
+      } else {
+        final error = jsonDecode(response.body);
+        return {
+          'success': false,
+          'error': error['error'] ?? 'Failed to transfer ownership'
+        };
+      }
+    } catch (e) {
+      print('Error transferring ownership: $e');
+      return {'success': false, 'error': e.toString()};
+    }
+  }
+
+  /// Get list of banned members
+  Future<Map<String, dynamic>?> getBannedMembers(String pulseId) async {
+    final userExists = await ensureUserExists();
+    if (!userExists) return null;
+
+    try {
+      final token = await _getAuthToken();
+      if (token == null) return null;
+
+      final url = '$_baseUrl/pulses/$pulseId/banned';
+      final response = await _client.get(
+        Uri.parse(url),
+        headers: _getHeaders(token),
+      );
+
+      if (response.statusCode == 200) {
+        return jsonDecode(response.body) as Map<String, dynamic>;
+      } else {
+        return null;
+      }
+    } catch (e) {
+      print('Error fetching banned members: $e');
+      return null;
+    }
+  }
+
+  // ============================================================================
+  // END PULSE ADMIN APIs
+  // ============================================================================
 
   Future<Map<String, dynamic>?> getPulseParticipants(String pulseId) async {
     // Ensure user exists in backend before fetching participants
@@ -1215,40 +1824,6 @@ class ApiService {
     }
   }
 
-  Future<bool> deletePulse(String pulseId) async {
-    // Ensure user exists in backend before deleting pulse
-    final userExists = await ensureUserExists();
-    if (!userExists) {
-      print('Cannot delete pulse: User not registered in backend');
-      return false;
-    }
-
-    try {
-      final token = await _getAuthToken();
-      if (token == null) {
-        print('No authentication token available');
-        return false;
-      }
-
-      final url = '$_baseUrl/pulses/$pulseId';
-      final response = await _client.delete(
-        Uri.parse(url),
-        headers: _getHeaders(token),
-      );
-
-      if (response.statusCode == 200) {
-        return true;
-      } else {
-        print(
-            'Failed to delete pulse: ${response.statusCode} - ${response.body}');
-        return false;
-      }
-    } catch (e) {
-      print('Error deleting pulse: $e');
-      return false;
-    }
-  }
-
   // Geohash nearby public pulses
   Future<List<Map<String, dynamic>>?> getNearbyPulsesGeohash({
     required double latitude,
@@ -1443,6 +2018,177 @@ class ApiService {
       interactionType: 'share',
       source: 'feed',
     );
+  }
+
+  /// Get user's ML features (preferences, interaction history stats)
+  Future<Map<String, dynamic>?> getUserMLFeatures() async {
+    try {
+      final token = await _getAuthToken();
+      if (token == null) return null;
+
+      final url = '$_baseUrl/recommendations/features';
+      final response = await _client.get(
+        Uri.parse(url),
+        headers: _getHeaders(token),
+      );
+
+      if (response.statusCode == 200) {
+        return jsonDecode(response.body) as Map<String, dynamic>;
+      }
+    } catch (e) {
+      print('Error getting user ML features: $e');
+    }
+    return null;
+  }
+
+  /// Get recommendation statistics
+  Future<Map<String, dynamic>?> getRecommendationStats() async {
+    try {
+      final token = await _getAuthToken();
+      if (token == null) return null;
+
+      final url = '$_baseUrl/recommendations/stats';
+      final response = await _client.get(
+        Uri.parse(url),
+        headers: _getHeaders(token),
+      );
+
+      if (response.statusCode == 200) {
+        return jsonDecode(response.body) as Map<String, dynamic>;
+      }
+    } catch (e) {
+      print('Error getting recommendation stats: $e');
+    }
+    return null;
+  }
+
+  /// Get users similar to current user
+  Future<List<Map<String, dynamic>>> getSimilarUsers() async {
+    try {
+      final token = await _getAuthToken();
+      if (token == null) return [];
+
+      final url = '$_baseUrl/recommendations/similar-users';
+      final response = await _client.get(
+        Uri.parse(url),
+        headers: _getHeaders(token),
+      );
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        if (data is Map && data['similarUsers'] is List) {
+          return List<Map<String, dynamic>>.from(data['similarUsers']);
+        }
+      }
+    } catch (e) {
+      print('Error getting similar users: $e');
+    }
+    return [];
+  }
+
+  /// Get explanation for why a pulse was recommended
+  Future<String?> getRecommendationExplanation(String pulseId) async {
+    try {
+      final token = await _getAuthToken();
+      if (token == null) return null;
+
+      final url = '$_baseUrl/recommendations/explain/$pulseId';
+      final response = await _client.get(
+        Uri.parse(url),
+        headers: _getHeaders(token),
+      );
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        if (data is Map && data['explanation'] != null) {
+          return data['explanation'] as String;
+        }
+      }
+    } catch (e) {
+      print('Error getting recommendation explanation: $e');
+    }
+    return null;
+  }
+
+  /// Get user's interaction history
+  Future<List<Map<String, dynamic>>> getInteractionHistory({
+    int limit = 50,
+  }) async {
+    try {
+      final token = await _getAuthToken();
+      if (token == null) return [];
+
+      final url = Uri.parse('$_baseUrl/recommendations/interactions')
+          .replace(queryParameters: {'limit': limit.toString()});
+
+      final response = await _client.get(
+        url,
+        headers: _getHeaders(token),
+      );
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        if (data is Map && data['interactions'] is List) {
+          return List<Map<String, dynamic>>.from(data['interactions']);
+        }
+      }
+    } catch (e) {
+      print('Error getting interaction history: $e');
+    }
+    return [];
+  }
+
+  /// Recompute user ML features
+  Future<void> recomputeUserFeatures() async {
+    try {
+      final token = await _getAuthToken();
+      if (token == null) return;
+
+      final url = '$_baseUrl/recommendations/compute-features';
+      await _client.post(
+        Uri.parse(url),
+        headers: _getHeaders(token),
+      );
+    } catch (e) {
+      print('Error recomputing user features: $e');
+    }
+  }
+
+  /// Get ML model statistics
+  Future<Map<String, dynamic>?> getMLModelStats() async {
+    try {
+      final token = await _getAuthToken();
+      if (token == null) return null;
+
+      final url = '$_baseUrl/recommendations/model-stats';
+      final response = await _client.get(
+        Uri.parse(url),
+        headers: _getHeaders(token),
+      );
+
+      if (response.statusCode == 200) {
+        return jsonDecode(response.body) as Map<String, dynamic>;
+      }
+    } catch (e) {
+      print('Error getting ML model stats: $e');
+    }
+    return null;
+  }
+
+  /// Clear recommendation cache
+  Future<void> clearRecommendationCache() async {
+    try {
+      final token = await _getAuthToken();
+      if (token == null) return;
+
+      final url = '$_baseUrl/recommendations/cache';
+      await _client.delete(
+        Uri.parse(url),
+        headers: _getHeaders(token),
+      );
+    } catch (e) {
+      print('Error clearing recommendation cache: $e');
+    }
   }
 
   // Profile-related methods

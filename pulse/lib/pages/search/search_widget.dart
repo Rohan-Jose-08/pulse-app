@@ -1,4 +1,5 @@
 import '/backend/api_service.dart';
+import '/services/ml_recommendation_service.dart';
 import '/components/navbar_widget.dart';
 import '/components/joinpulse_widget.dart';
 import '/flutter_flow/flutter_flow_theme.dart';
@@ -218,35 +219,85 @@ class _SearchWidgetState extends State<SearchWidget>
   }
 
   Future<void> _fetchForYouPulses() async {
+    if (!mounted) return;
+    setState(() => _isLoadingForYou = true);
+
     try {
-      setState(() => _isLoadingForYou = true);
+      // Get user profile for location
       final profile = await ApiService.instance.getUserProfile();
       final lat = profile != null ? profile['locationLatitude'] as num? : null;
       final lng = profile != null ? profile['locationLongitude'] as num? : null;
+
+      // Try ML recommendations first
+      try {
+        final recommendations = await MLRecommendationService.instance
+            .getPersonalizedRecommendations(
+          latitude: lat?.toDouble(),
+          longitude: lng?.toDouble(),
+        );
+
+        if (recommendations.isNotEmpty && mounted) {
+          setState(() {
+            _forYouPulses = recommendations.take(10).toList();
+          });
+          return; // Success - exit early
+        }
+      } catch (mlError) {
+        print('ML recommendations not available: $mlError');
+        // Continue to fallback
+      }
+
+      // Fallback: Use regular API with location-based filtering
       final pulses = await ApiService.instance.getPulses(
         latitude: lat?.toDouble(),
         longitude: lng?.toDouble(),
         radiusKm: 50,
       );
 
-      if (pulses != null && pulses.isNotEmpty) {
+      if (pulses != null && pulses.isNotEmpty && mounted) {
         setState(() {
-          _forYouPulses = pulses.take(5).toList();
+          _forYouPulses = pulses.take(10).toList();
         });
+      } else {
+        // Last resort: get any pulses without location filter
+        final anyPulses = await ApiService.instance.getPulses();
+        if (anyPulses != null && anyPulses.isNotEmpty && mounted) {
+          setState(() {
+            _forYouPulses = anyPulses.take(10).toList();
+          });
+        }
       }
     } catch (e) {
       print('Error fetching for you pulses: $e');
+      // Even if everything fails, try one last time without any filters
+      try {
+        final pulses = await ApiService.instance.getPulses();
+        if (pulses != null && mounted) {
+          setState(() {
+            _forYouPulses = pulses.take(10).toList();
+          });
+        }
+      } catch (finalError) {
+        print('Final fallback failed: $finalError');
+        // Set empty list to stop loading state
+        if (mounted) {
+          setState(() {
+            _forYouPulses = [];
+          });
+        }
+      }
     } finally {
-      setState(() => _isLoadingForYou = false);
+      if (mounted) setState(() => _isLoadingForYou = false);
     }
   }
 
   Future<void> _fetchTrendingPulses() async {
+    if (!mounted) return;
     try {
       setState(() => _isLoadingTrending = true);
       final pulses = await ApiService.instance.getPulses(); // no coord bias
 
-      if (pulses != null && pulses.isNotEmpty) {
+      if (pulses != null && pulses.isNotEmpty && mounted) {
         final trending = List<Map<String, dynamic>>.from(pulses)..shuffle();
         setState(() {
           _trendingPulses = trending.take(10).toList();
@@ -506,6 +557,13 @@ class _SearchWidgetState extends State<SearchWidget>
       return;
     }
 
+    // Track ML recommendation click
+    MLRecommendationService.instance.trackInteraction(
+      pulseId: pulseId,
+      type: MLInteractionType.recommendationClick,
+      source: 'search_for_you',
+    );
+
     // Navigate to pulse detail page
     context.goNamed(
       'PulseDetail',
@@ -610,6 +668,9 @@ class _SearchWidgetState extends State<SearchWidget>
   }
 
   Widget _buildHeader() {
+    final theme = FlutterFlowTheme.of(context);
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+
     return AnimatedBuilder(
       animation: _headerAnimation,
       builder: (context, child) {
@@ -618,33 +679,42 @@ class _SearchWidgetState extends State<SearchWidget>
           child: Opacity(
             opacity: _headerAnimation.value,
             child: Container(
-              padding: EdgeInsets.fromLTRB(16, 16, 16, 8),
+              padding: EdgeInsets.fromLTRB(20, 20, 20, 12),
               child: Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
                   Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text(
-                        'Explore',
-                        style:
-                            FlutterFlowTheme.of(context).displaySmall.override(
-                                  font: GoogleFonts.interTight(
-                                    fontWeight: FontWeight.bold,
-                                  ),
-                                  fontSize: 32,
-                                ),
+                      ShaderMask(
+                        shaderCallback: (bounds) => const LinearGradient(
+                          colors: [Color(0xFF6366F1), Color(0xFF8B5CF6)],
+                        ).createShader(bounds),
+                        child: Text(
+                          'Explore',
+                          style: theme.displaySmall.override(
+                            font: GoogleFonts.interTight(
+                              fontWeight: FontWeight.w800,
+                            ),
+                            fontSize: 34,
+                            color: Colors.white,
+                            letterSpacing: -1.0,
+                          ),
+                        ),
                       )
                           .animate()
                           .fadeIn(duration: 600.ms, delay: 200.ms)
                           .slideX(begin: -0.2, end: 0),
-                      SizedBox(height: 4),
+                      SizedBox(height: 6),
                       Text(
                         'Discover amazing events',
-                        style: FlutterFlowTheme.of(context).bodyLarge.override(
-                              font: GoogleFonts.inter(),
-                              color: FlutterFlowTheme.of(context).secondaryText,
-                            ),
+                        style: theme.bodyLarge.override(
+                          font: GoogleFonts.inter(
+                            fontWeight: FontWeight.w500,
+                          ),
+                          color: theme.secondaryText,
+                          letterSpacing: -0.2,
+                        ),
                       )
                           .animate()
                           .fadeIn(duration: 600.ms, delay: 400.ms)
@@ -655,78 +725,83 @@ class _SearchWidgetState extends State<SearchWidget>
                   // Actions: Invitations + Search
                   Row(
                     children: [
-                      Container(
-                        margin: EdgeInsets.only(right: 12),
-                        decoration: BoxDecoration(
-                          color:
-                              FlutterFlowTheme.of(context).secondaryBackground,
-                          shape: BoxShape.circle,
-                          boxShadow: [
-                            BoxShadow(
-                              blurRadius: 10,
-                              color: Colors.black.withOpacity(0.1),
-                              offset: Offset(0, 4),
+                      _buildHeaderIconButton(
+                        icon: Icons.mail_outline_rounded,
+                        onPressed: () async {
+                          await Haptics.vibrate(HapticsType.selection);
+                          Navigator.of(context).push(
+                            MaterialPageRoute(
+                              builder: (_) => const PulseInvitationsPage(),
                             ),
-                          ],
-                        ),
-                        child: IconButton(
-                          icon: Icon(
-                            Icons.mail_outline_rounded,
-                            color: FlutterFlowTheme.of(context).primary,
-                            size: 24,
-                          ),
-                          tooltip: 'Invitations',
-                          onPressed: () async {
-                            await Haptics.vibrate(HapticsType.selection);
-                            Navigator.of(context).push(
-                              MaterialPageRoute(
-                                builder: (_) => const PulseInvitationsPage(),
-                              ),
-                            );
-                          },
-                        ),
+                          );
+                        },
+                        gradient: [
+                          const Color(0xFFEC4899),
+                          const Color(0xFFF43F5E)
+                        ],
+                        isDark: isDark,
                       ),
-                      Container(
-                        decoration: BoxDecoration(
-                          color:
-                              FlutterFlowTheme.of(context).secondaryBackground,
-                          shape: BoxShape.circle,
-                          boxShadow: [
-                            BoxShadow(
-                              blurRadius: 10,
-                              color: Colors.black.withOpacity(0.1),
-                              offset: Offset(0, 4),
-                            ),
-                          ],
-                        ),
-                        child: IconButton(
-                          icon: Icon(
-                            Icons.search_rounded,
-                            color: FlutterFlowTheme.of(context).primaryText,
-                            size: 24,
-                          ),
-                          onPressed: () async {
-                            await Haptics.vibrate(HapticsType.selection);
-                            _showSearchModal();
-                          },
-                        ),
+                      SizedBox(width: 12),
+                      _buildHeaderIconButton(
+                        icon: Icons.search_rounded,
+                        onPressed: () async {
+                          await Haptics.vibrate(HapticsType.selection);
+                          _showSearchModal();
+                        },
+                        gradient: [
+                          const Color(0xFF6366F1),
+                          const Color(0xFF8B5CF6)
+                        ],
+                        isDark: isDark,
                       ),
                     ],
-                  )
-                      .animate()
-                      .scale(
-                          begin: Offset(0, 0),
-                          end: Offset(1, 1),
-                          duration: 600.ms,
-                          delay: 600.ms)
-                      .then()
-                      .shimmer(duration: 2000.ms, delay: 1000.ms),
+                  ).animate().scale(
+                      begin: Offset(0, 0),
+                      end: Offset(1, 1),
+                      duration: 600.ms,
+                      delay: 600.ms),
                 ],
               ),
             ),
           ),
         );
       },
+    );
+  }
+
+  Widget _buildHeaderIconButton({
+    required IconData icon,
+    required VoidCallback onPressed,
+    required List<Color> gradient,
+    required bool isDark,
+  }) {
+    return Container(
+      decoration: BoxDecoration(
+        gradient: LinearGradient(colors: gradient),
+        shape: BoxShape.circle,
+        boxShadow: [
+          BoxShadow(
+            blurRadius: 12,
+            color: gradient.first.withOpacity(0.4),
+            offset: Offset(0, 4),
+          ),
+        ],
+      ),
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          borderRadius: BorderRadius.circular(24),
+          onTap: onPressed,
+          child: Container(
+            padding: EdgeInsets.all(12),
+            child: Icon(
+              icon,
+              color: Colors.white,
+              size: 22,
+            ),
+          ),
+        ),
+      ),
     );
   }
 
@@ -864,6 +939,9 @@ class _SearchWidgetState extends State<SearchWidget>
   }
 
   Widget _buildForYouSection() {
+    final theme = FlutterFlowTheme.of(context);
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+
     return Container(
       margin: EdgeInsets.only(top: 32),
       child: Column(
@@ -871,41 +949,131 @@ class _SearchWidgetState extends State<SearchWidget>
         children: [
           Padding(
             padding: EdgeInsets.symmetric(horizontal: 16),
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                Row(
-                  children: [
-                    Icon(
+            child: Container(
+              padding: EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  colors: isDark
+                      ? [const Color(0xFF1E1E2E), const Color(0xFF252538)]
+                      : [Colors.white, const Color(0xFFFAFAFF)],
+                ),
+                borderRadius: BorderRadius.circular(20),
+                border: Border.all(
+                  color: theme.primary.withOpacity(0.2),
+                ),
+                boxShadow: [
+                  BoxShadow(
+                    blurRadius: 16,
+                    color: theme.primary.withOpacity(0.1),
+                    offset: Offset(0, 8),
+                  ),
+                ],
+              ),
+              child: Row(
+                children: [
+                  Container(
+                    padding: EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      gradient: LinearGradient(
+                        colors: [
+                          const Color(0xFF6366F1),
+                          const Color(0xFF8B5CF6)
+                        ],
+                      ),
+                      borderRadius: BorderRadius.circular(14),
+                      boxShadow: [
+                        BoxShadow(
+                          blurRadius: 8,
+                          color: const Color(0xFF6366F1).withOpacity(0.3),
+                          offset: Offset(0, 4),
+                        ),
+                      ],
+                    ),
+                    child: Icon(
                       Icons.auto_awesome_rounded,
-                      color: FlutterFlowTheme.of(context).primary,
+                      color: Colors.white,
                       size: 24,
                     ),
-                    SizedBox(width: 8),
-                    Text(
-                      'For You',
-                      style:
-                          FlutterFlowTheme.of(context).headlineSmall.override(
-                                font: GoogleFonts.interTight(
-                                  fontWeight: FontWeight.bold,
-                                ),
-                              ),
-                    ),
-                  ],
-                ),
-                TextButton(
-                  onPressed: () async {
-                    await Haptics.vibrate(HapticsType.selection);
-                  },
-                  child: Text(
-                    'See all',
-                    style: FlutterFlowTheme.of(context).bodyMedium.override(
-                          font: GoogleFonts.inter(),
-                          color: FlutterFlowTheme.of(context).primary,
-                        ),
                   ),
-                ),
-              ],
+                  SizedBox(width: 14),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'For You',
+                          style: theme.headlineSmall.override(
+                            font: GoogleFonts.interTight(
+                              fontWeight: FontWeight.bold,
+                            ),
+                            letterSpacing: -0.5,
+                          ),
+                        ),
+                        SizedBox(height: 2),
+                        Row(
+                          children: [
+                            Container(
+                              padding: EdgeInsets.symmetric(
+                                  horizontal: 8, vertical: 3),
+                              decoration: BoxDecoration(
+                                color: theme.primary.withOpacity(0.1),
+                                borderRadius: BorderRadius.circular(8),
+                              ),
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Icon(
+                                    Icons.psychology_rounded,
+                                    size: 12,
+                                    color: theme.primary,
+                                  ),
+                                  SizedBox(width: 4),
+                                  Text(
+                                    'ML-Powered',
+                                    style: theme.labelSmall.override(
+                                      font: GoogleFonts.inter(
+                                        fontWeight: FontWeight.w600,
+                                      ),
+                                      color: theme.primary,
+                                      fontSize: 10,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+                  Material(
+                    color: Colors.transparent,
+                    child: InkWell(
+                      borderRadius: BorderRadius.circular(12),
+                      onTap: () async {
+                        await Haptics.vibrate(HapticsType.selection);
+                      },
+                      child: Container(
+                        padding:
+                            EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                        decoration: BoxDecoration(
+                          color: theme.primary.withOpacity(0.1),
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: Text(
+                          'See all',
+                          style: theme.bodyMedium.override(
+                            font: GoogleFonts.inter(
+                              fontWeight: FontWeight.w600,
+                            ),
+                            color: theme.primary,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
             ),
           ),
           SizedBox(height: 16),

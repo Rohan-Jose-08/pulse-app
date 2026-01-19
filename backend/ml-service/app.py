@@ -1710,6 +1710,353 @@ def compute_user_features():
         return jsonify({'error': 'Internal server error'}), 500
 
 
+# ============================================================================
+# CONTENT MODERATION ML SERVICE
+# ============================================================================
+
+class ContentModerator:
+    """
+    ML-powered content moderation service
+    Uses pattern matching, keyword detection, and statistical models
+    to detect potentially harmful content
+    """
+    
+    def __init__(self):
+        # Toxicity indicators (weighted patterns)
+        self.toxicity_patterns = [
+            # Severe - immediate action
+            (r'\b(kill|murder|die|death threats?|shoot|stab|bomb)\b', 0.9, 'VIOLENCE'),
+            (r'\b(kys|kill yourself|go die)\b', 0.95, 'VIOLENCE'),
+            (r'\b(n[i1]gg[ae]r?|f[a@]gg?[o0]t|r[e3]t[a@]rd)\b', 0.95, 'HATE_SPEECH'),
+            
+            # High severity
+            (r'\b(hate|despise)\s+(all|every)?\s*(women|men|gays?|blacks?|whites?|jews?|muslims?)\b', 0.85, 'HATE_SPEECH'),
+            (r'\b(stupid|dumb|idiot)\s+(women|men|race)\b', 0.75, 'HATE_SPEECH'),
+            (r'\b(i\'?ll|gonna|going to)\s+(hurt|attack|beat|kill)\b', 0.85, 'VIOLENCE'),
+            (r'\b(rape|molest|assault)\b', 0.8, 'VIOLENCE'),
+            
+            # Medium severity - harassment
+            (r'\b(shut up|stfu|f\*?u\*?c\*?k\s+(you|off|u))\b', 0.5, 'HARASSMENT'),
+            (r'\b(loser|pathetic|worthless|trash)\b', 0.4, 'HARASSMENT'),
+            (r'\b(ugly|fat|disgusting)\b', 0.35, 'HARASSMENT'),
+            
+            # Adult content indicators
+            (r'\b(nude|naked|sex|porn)\b', 0.6, 'ADULT'),
+            (r'\b(onlyfans|escort|hookup)\b', 0.7, 'ADULT'),
+        ]
+        
+        # Spam indicators
+        self.spam_patterns = [
+            (r'https?://[^\s]+\.(ru|cn|xyz|tk|ml|ga|cf)\b', 0.8, 'SPAM'),
+            (r'\b(earn|make|win)\s*\$?\d+.*?(day|hour|week|month)\b', 0.75, 'SPAM'),
+            (r'\b(click|visit|check)\s+(here|now|this|link)\b', 0.6, 'SPAM'),
+            (r'\b(free|win)\s+(iphone|bitcoin|crypto|gift|money)\b', 0.8, 'SPAM'),
+            (r'\b(dm|message)\s+(me|for)\s+(deal|offer|price)\b', 0.7, 'SPAM'),
+            (r'\b(limited|exclusive)\s+(offer|deal|time)\b', 0.5, 'SPAM'),
+            (r'(📲|💰|🔥|💯){3,}', 0.6, 'SPAM'),  # Emoji spam
+            (r'(.)\1{5,}', 0.4, 'SPAM'),  # Character repetition
+            (r'(https?://[^\s]+\s*){3,}', 0.7, 'SPAM'),  # Multiple links
+        ]
+        
+        # Violence indicators
+        self.violence_patterns = [
+            (r'\b(gun|weapon|knife|sword)\b.*\b(bring|use|carry)\b', 0.6, 'VIOLENCE'),
+            (r'\b(fight|attack|beat\s+up)\b', 0.5, 'VIOLENCE'),
+            (r'\b(blood|gore|brutal)\b', 0.4, 'VIOLENCE'),
+        ]
+        
+        # Compile patterns for efficiency
+        import re
+        self.compiled_toxicity = [(re.compile(p, re.IGNORECASE), s, c) for p, s, c in self.toxicity_patterns]
+        self.compiled_spam = [(re.compile(p, re.IGNORECASE), s, c) for p, s, c in self.spam_patterns]
+        self.compiled_violence = [(re.compile(p, re.IGNORECASE), s, c) for p, s, c in self.violence_patterns]
+    
+    def analyze(self, text: str) -> Dict[str, Any]:
+        """
+        Analyze text content for moderation
+        
+        Returns:
+            Dict with toxicity, spam, violence, adult scores and detected categories
+        """
+        if not text or not text.strip():
+            return {
+                'toxicityScore': 0.0,
+                'spamScore': 0.0,
+                'violenceScore': 0.0,
+                'adultScore': 0.0,
+                'categories': [],
+                'details': []
+            }
+        
+        text = text.strip()
+        categories = set()
+        details = []
+        
+        toxicity_score = 0.0
+        spam_score = 0.0
+        violence_score = 0.0
+        adult_score = 0.0
+        
+        # Check toxicity patterns
+        for pattern, score, category in self.compiled_toxicity:
+            matches = pattern.findall(text)
+            if matches:
+                if category == 'HATE_SPEECH':
+                    toxicity_score = max(toxicity_score, score)
+                elif category == 'VIOLENCE':
+                    violence_score = max(violence_score, score)
+                    toxicity_score = max(toxicity_score, score * 0.8)
+                elif category == 'HARASSMENT':
+                    toxicity_score = max(toxicity_score, score)
+                elif category == 'ADULT':
+                    adult_score = max(adult_score, score)
+                
+                categories.add(category)
+                details.append({
+                    'pattern': pattern.pattern,
+                    'matches': matches[:3],
+                    'category': category,
+                    'score': score
+                })
+        
+        # Check spam patterns
+        for pattern, score, category in self.compiled_spam:
+            matches = pattern.findall(text)
+            if matches:
+                spam_score = max(spam_score, score)
+                categories.add(category)
+                details.append({
+                    'pattern': pattern.pattern,
+                    'matches': [str(m)[:50] for m in matches[:3]],
+                    'category': category,
+                    'score': score
+                })
+        
+        # Check violence patterns
+        for pattern, score, category in self.compiled_violence:
+            matches = pattern.findall(text)
+            if matches:
+                violence_score = max(violence_score, score)
+                categories.add(category)
+                details.append({
+                    'pattern': pattern.pattern,
+                    'matches': matches[:3],
+                    'category': category,
+                    'score': score
+                })
+        
+        # Statistical analysis for additional signals
+        text_stats = self._analyze_text_statistics(text)
+        
+        # Adjust scores based on text statistics
+        if text_stats['caps_ratio'] > 0.7:
+            toxicity_score = min(1.0, toxicity_score + 0.1)
+        
+        if text_stats['emoji_density'] > 0.3:
+            spam_score = min(1.0, spam_score + 0.15)
+        
+        if text_stats['link_count'] > 2:
+            spam_score = min(1.0, spam_score + 0.2)
+        
+        return {
+            'toxicityScore': round(toxicity_score, 3),
+            'spamScore': round(spam_score, 3),
+            'violenceScore': round(violence_score, 3),
+            'adultScore': round(adult_score, 3),
+            'categories': list(categories),
+            'details': details[:5],  # Limit details
+            'statistics': text_stats
+        }
+    
+    def _analyze_text_statistics(self, text: str) -> Dict[str, Any]:
+        """Analyze text statistics for additional moderation signals"""
+        import re
+        
+        word_count = len(text.split())
+        char_count = len(text)
+        
+        # Capital letters ratio
+        caps_count = sum(1 for c in text if c.isupper())
+        caps_ratio = caps_count / max(1, len([c for c in text if c.isalpha()]))
+        
+        # Emoji density
+        emoji_pattern = re.compile(
+            "["
+            "\U0001F600-\U0001F64F"  # emoticons
+            "\U0001F300-\U0001F5FF"  # symbols & pictographs
+            "\U0001F680-\U0001F6FF"  # transport & map symbols
+            "\U0001F1E0-\U0001F1FF"  # flags
+            "\U00002700-\U000027BF"  # dingbats
+            "\U0001F900-\U0001F9FF"  # supplemental symbols
+            "]+", 
+            flags=re.UNICODE
+        )
+        emoji_count = len(emoji_pattern.findall(text))
+        emoji_density = emoji_count / max(1, word_count)
+        
+        # Link count
+        link_pattern = re.compile(r'https?://[^\s]+')
+        link_count = len(link_pattern.findall(text))
+        
+        # Repetition score
+        words = text.lower().split()
+        unique_words = set(words)
+        repetition_ratio = 1 - (len(unique_words) / max(1, len(words)))
+        
+        return {
+            'word_count': word_count,
+            'char_count': char_count,
+            'caps_ratio': round(caps_ratio, 3),
+            'emoji_density': round(emoji_density, 3),
+            'link_count': link_count,
+            'repetition_ratio': round(repetition_ratio, 3)
+        }
+
+
+# Initialize content moderator
+content_moderator = ContentModerator()
+
+
+@app.route('/api/moderate', methods=['POST'])
+def moderate_content():
+    """
+    Analyze content for moderation
+    
+    Request body:
+    {
+        "text": "Content to analyze",
+        "context": "pulse_title" | "pulse_description" | "message" | "highlight_caption" (optional)
+    }
+    
+    Response:
+    {
+        "toxicityScore": 0.0-1.0,
+        "spamScore": 0.0-1.0,
+        "violenceScore": 0.0-1.0,
+        "adultScore": 0.0-1.0,
+        "categories": ["SPAM", "HARASSMENT", ...],
+        "recommendation": "AUTO_DISMISS" | "NEEDS_REVIEW" | "AUTO_ACTION"
+    }
+    """
+    try:
+        data = request.json
+        text = data.get('text', '')
+        context = data.get('context', 'general')
+        
+        if not text:
+            return jsonify({
+                'toxicityScore': 0.0,
+                'spamScore': 0.0,
+                'violenceScore': 0.0,
+                'adultScore': 0.0,
+                'categories': [],
+                'recommendation': 'AUTO_DISMISS'
+            })
+        
+        # Analyze content
+        result = content_moderator.analyze(text)
+        
+        # Determine recommendation
+        max_score = max(
+            result['toxicityScore'],
+            result['spamScore'],
+            result['violenceScore'],
+            result['adultScore']
+        )
+        
+        if max_score < 0.1:
+            recommendation = 'AUTO_DISMISS'
+        elif max_score >= 0.85:
+            recommendation = 'AUTO_ACTION'
+        else:
+            recommendation = 'NEEDS_REVIEW'
+        
+        # Context-specific adjustments
+        if context == 'message':
+            # Be slightly more lenient for private messages
+            if recommendation == 'AUTO_ACTION' and max_score < 0.95:
+                recommendation = 'NEEDS_REVIEW'
+        elif context == 'pulse_title':
+            # Be stricter for public pulse titles
+            if recommendation == 'NEEDS_REVIEW' and max_score > 0.6:
+                recommendation = 'AUTO_ACTION'
+        
+        response = {
+            'toxicityScore': result['toxicityScore'],
+            'spamScore': result['spamScore'],
+            'violenceScore': result['violenceScore'],
+            'adultScore': result['adultScore'],
+            'categories': result['categories'],
+            'recommendation': recommendation
+        }
+        
+        logger.info(f"Moderation result: {recommendation} (max_score={max_score:.2f})")
+        
+        return jsonify(response)
+    
+    except Exception as e:
+        logger.error(f"Error in content moderation: {e}")
+        return jsonify({'error': 'Internal server error'}), 500
+
+
+@app.route('/api/moderate/batch', methods=['POST'])
+def moderate_batch():
+    """
+    Analyze multiple content items in batch
+    
+    Request body:
+    {
+        "items": [
+            {"id": "item1", "text": "Content 1", "context": "message"},
+            {"id": "item2", "text": "Content 2", "context": "pulse_title"}
+        ]
+    }
+    """
+    try:
+        data = request.json
+        items = data.get('items', [])
+        
+        if not items:
+            return jsonify({'results': []})
+        
+        results = []
+        for item in items[:100]:  # Limit to 100 items
+            text = item.get('text', '')
+            context = item.get('context', 'general')
+            item_id = item.get('id', '')
+            
+            analysis = content_moderator.analyze(text)
+            max_score = max(
+                analysis['toxicityScore'],
+                analysis['spamScore'],
+                analysis['violenceScore'],
+                analysis['adultScore']
+            )
+            
+            if max_score < 0.1:
+                recommendation = 'AUTO_DISMISS'
+            elif max_score >= 0.85:
+                recommendation = 'AUTO_ACTION'
+            else:
+                recommendation = 'NEEDS_REVIEW'
+            
+            results.append({
+                'id': item_id,
+                'toxicityScore': analysis['toxicityScore'],
+                'spamScore': analysis['spamScore'],
+                'violenceScore': analysis['violenceScore'],
+                'adultScore': analysis['adultScore'],
+                'categories': analysis['categories'],
+                'recommendation': recommendation
+            })
+        
+        return jsonify({'results': results})
+    
+    except Exception as e:
+        logger.error(f"Error in batch moderation: {e}")
+        return jsonify({'error': 'Internal server error'}), 500
+
+
 if __name__ == '__main__':
     port = 5001
     logger.info(f"Starting Pulse ML Recommendation Service on port {port}")
