@@ -296,17 +296,22 @@ class SocketService {
     _emitOrQueue('leave:conversation', conversationId);
   }
 
-  void sendMessage(
-      {required String conversationId,
-      String? text,
-      String? imageUrl,
-      String? videoUrl,
-      String? repliedToId}) {
+  void sendMessage({
+    required String conversationId,
+    String? text,
+    String? imageUrl,
+    String? videoUrl,
+    String? audioUrl,
+    int? audioDuration,
+    String? repliedToId,
+  }) {
     _emitOrQueue('message:send', {
       'conversationId': conversationId,
       'text': text,
       'imageUrl': imageUrl,
       'videoUrl': videoUrl,
+      if (audioUrl != null) 'audioUrl': audioUrl,
+      if (audioDuration != null) 'audioDuration': audioDuration,
       if (repliedToId != null) 'repliedToId': repliedToId,
     });
   }

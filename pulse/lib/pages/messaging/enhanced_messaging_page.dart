@@ -18,6 +18,8 @@ import 'package:permission_handler/permission_handler.dart';
 import '../../backend/socket_service.dart';
 import '../../widgets/moderation/report_content_dialog.dart';
 import '../../widgets/moderation/user_actions_sheet.dart';
+import '../../services/voice_recording_service.dart';
+import '../../widgets/voice_message_widgets.dart';
 
 // ================= Models =================
 class RepliedMessage {
@@ -28,6 +30,8 @@ class RepliedMessage {
     this.text,
     this.imageUrl,
     this.videoUrl,
+    this.audioUrl,
+    this.audioDuration,
   });
   final String id;
   final String senderId;
@@ -35,9 +39,12 @@ class RepliedMessage {
   final String? text;
   final String? imageUrl;
   final String? videoUrl;
+  final String? audioUrl;
+  final int? audioDuration;
 
   bool get isImage => imageUrl != null && imageUrl!.isNotEmpty;
   bool get isVideo => videoUrl != null && videoUrl!.isNotEmpty;
+  bool get isAudio => audioUrl != null && audioUrl!.isNotEmpty;
 
   factory RepliedMessage.fromJson(Map<String, dynamic> json) => RepliedMessage(
         id: json['id'] as String,
@@ -46,6 +53,8 @@ class RepliedMessage {
         text: json['text'] as String?,
         imageUrl: json['imageUrl'] as String?,
         videoUrl: json['videoUrl'] as String?,
+        audioUrl: json['audioUrl'] as String?,
+        audioDuration: json['audioDuration'] as int?,
       );
 }
 
@@ -57,6 +66,8 @@ class EnhancedMessage {
     this.text,
     this.imageUrl,
     this.videoUrl,
+    this.audioUrl,
+    this.audioDuration,
     this.reactions,
     this.senderName,
     this.senderPhotoUrl,
@@ -74,6 +85,8 @@ class EnhancedMessage {
   final String? text;
   final String? imageUrl;
   final String? videoUrl;
+  final String? audioUrl;
+  final int? audioDuration;
   final Map<String, List<String>>? reactions; // emoji -> userIds
   final String? senderName;
   final String? senderPhotoUrl;
@@ -86,6 +99,7 @@ class EnhancedMessage {
   final DateTime? editedAt;
   bool get isImage => imageUrl != null && imageUrl!.isNotEmpty;
   bool get isVideo => videoUrl != null && videoUrl!.isNotEmpty;
+  bool get isAudio => audioUrl != null && audioUrl!.isNotEmpty;
   bool get isLocation => location != null;
   bool get hasLinkPreview => linkPreview != null;
   bool get isEdited => editedAt != null;
@@ -98,6 +112,8 @@ class EnhancedMessage {
         text: data['text'] as String?,
         imageUrl: data['imageUrl'] as String?,
         videoUrl: data['videoUrl'] as String?,
+        audioUrl: data['audioUrl'] as String?,
+        audioDuration: data['audioDuration'] as int?,
         reactions: data['reactions'] != null
             ? Map<String, List<String>>.from(
                 (data['reactions'] as Map<String, dynamic>).map(
@@ -226,6 +242,8 @@ final _enhancedMessagesStreamProvider = StreamProvider.autoDispose
           text: existing.text,
           imageUrl: existing.imageUrl,
           videoUrl: existing.videoUrl,
+          audioUrl: existing.audioUrl,
+          audioDuration: existing.audioDuration,
           reactions: existing.reactions,
           senderName: existing.senderName,
           senderPhotoUrl: existing.senderPhotoUrl,
@@ -328,6 +346,9 @@ class _EnhancedMessagingPageState extends ConsumerState<EnhancedMessagingPage>
   // Activity status tracking
   String? _recipientStatus;
   StreamSubscription? _statusSubscription;
+
+  // Voice recording state
+  bool _isRecordingVoice = false;
 
   void _indexGroupMembers() {
     final members = widget.groupMembers;
@@ -617,6 +638,70 @@ class _EnhancedMessagingPageState extends ConsumerState<EnhancedMessagingPage>
         );
       }
     }
+  }
+
+  /// Send a voice message
+  Future<void> _sendVoiceMessage(VoiceRecordingResult result) async {
+    try {
+      // Show uploading indicator
+      showDialog(
+        context: context,
+        barrierDismissible: false,
+        builder: (_) => const Center(child: CircularProgressIndicator()),
+      );
+
+      // Upload audio file to Firebase Storage
+      final bytes = await result.file.readAsBytes();
+      final ref = FirebaseStorage.instance.ref().child(
+          'chat_uploads/$_chatId/${DateTime.now().millisecondsSinceEpoch}_voice.m4a');
+      final task = await ref.putData(
+        bytes,
+        SettableMetadata(contentType: 'audio/mp4'),
+      );
+      final url = await task.ref.getDownloadURL();
+
+      if (mounted) Navigator.of(context).pop();
+
+      // Send the message with audio URL
+      HapticFeedback.lightImpact();
+      ChatTransportManager.instance.active.sendMessage(
+        conversationId: _chatId,
+        audioUrl: url,
+        audioDuration: result.durationMs,
+        repliedToId: _reply?.id,
+      );
+      _clearReply();
+      await _scrollToBottom();
+
+      // Delete local temp file
+      try {
+        await result.file.delete();
+      } catch (_) {}
+    } catch (e) {
+      if (mounted) {
+        Navigator.of(context).maybePop();
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Failed to send voice message')),
+        );
+      }
+    }
+  }
+
+  /// Start voice recording mode
+  void _startVoiceRecording() {
+    HapticFeedback.mediumImpact();
+    setState(() => _isRecordingVoice = true);
+  }
+
+  /// Cancel voice recording
+  void _cancelVoiceRecording() {
+    setState(() => _isRecordingVoice = false);
+  }
+
+  /// Handle voice recording completion
+  Future<void> _onVoiceRecordingComplete(VoiceRecordingResult result) async {
+    setState(() => _isRecordingVoice = false);
+    await _sendVoiceMessage(result);
   }
 
   Future<void> _sendLocation() async {
@@ -1349,9 +1434,11 @@ class _EnhancedMessagingPageState extends ConsumerState<EnhancedMessagingPage>
             ? '📷 Image'
             : _reply!.isVideo
                 ? '🎥 Video'
-                : _reply!.isLocation
-                    ? '📍 Location'
-                    : 'Message');
+                : _reply!.isAudio
+                    ? '🎤 Voice message'
+                    : _reply!.isLocation
+                        ? '📍 Location'
+                        : 'Message');
     final replyToName = _reply!.senderName ?? 'Unknown';
     return Container(
       margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
@@ -1389,6 +1476,28 @@ class _EnhancedMessagingPageState extends ConsumerState<EnhancedMessagingPage>
   }
 
   Widget _composer(FlutterFlowTheme t) {
+    // Show voice recorder when recording
+    if (_isRecordingVoice) {
+      return SafeArea(
+        top: false,
+        child: Container(
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(color: t.secondaryBackground, boxShadow: [
+            BoxShadow(
+                color: Colors.black.withOpacity(.04),
+                blurRadius: 8,
+                offset: const Offset(0, -2))
+          ]),
+          child: VoiceRecorderWidget(
+            onRecordingComplete: _onVoiceRecordingComplete,
+            onCancel: _cancelVoiceRecording,
+            primaryColor: t.primary,
+            backgroundColor: t.primaryBackground,
+          ),
+        ),
+      );
+    }
+
     return SafeArea(
       top: false,
       child: ValueListenableBuilder<TextEditingValue>(
@@ -1471,10 +1580,7 @@ class _EnhancedMessagingPageState extends ConsumerState<EnhancedMessagingPage>
                             ))
                         : IconButton(
                             key: const ValueKey('mic'),
-                            onPressed: () => ScaffoldMessenger.of(context)
-                                .showSnackBar(const SnackBar(
-                                    content:
-                                        Text('Voice messages coming soon'))),
+                            onPressed: _startVoiceRecording,
                             icon: Icon(Icons.mic_none_rounded,
                                 color: t.secondaryText)),
                   )
@@ -1840,7 +1946,12 @@ class _EnhancedMessageBubbleState extends State<_EnhancedMessageBubble>
                                                   : widget.message.repliedTo!
                                                           .isVideo
                                                       ? '🎥 Video'
-                                                      : 'Media'),
+                                                      : widget
+                                                              .message
+                                                              .repliedTo!
+                                                              .isAudio
+                                                          ? '🎤 Voice message'
+                                                          : 'Media'),
                                           style: widget.theme.bodySmall
                                               .override(
                                                   color:
@@ -1917,6 +2028,22 @@ class _EnhancedMessageBubbleState extends State<_EnhancedMessageBubble>
                                                         fontSize: 10))
                                           ])))
                             ])),
+                        if ((widget.message.text ?? '').isNotEmpty)
+                          const SizedBox(height: 8)
+                      ],
+                      // Voice message display
+                      if (widget.message.isAudio) ...[
+                        VoiceMessagePlayer(
+                          audioUrl: widget.message.audioUrl!,
+                          duration: widget.message.audioDuration ?? 0,
+                          isMe: widget.isMine,
+                          primaryColor: widget.isMine
+                              ? Colors.white
+                              : widget.theme.primary,
+                          backgroundColor: widget.isMine
+                              ? widget.theme.primary.withOpacity(0.3)
+                              : widget.theme.secondaryBackground,
+                        ),
                         if ((widget.message.text ?? '').isNotEmpty)
                           const SizedBox(height: 8)
                       ],

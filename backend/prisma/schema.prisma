@@ -401,6 +401,8 @@ model Message {
   text           String?
   imageUrl       String?
   videoUrl       String?
+  audioUrl       String?  // Voice message audio file URL
+  audioDuration  Int?     // Voice message duration in milliseconds
   createdAt      DateTime @default(now())
   deliveredTo    String[] @default([]) // Array of user IDs who have received the message
   readBy         String[] @default([]) // Array of user IDs who have read the message

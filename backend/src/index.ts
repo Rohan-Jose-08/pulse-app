@@ -1738,11 +1738,11 @@ io.on('connection', (socket: any) => {
     }
   });
 
-  socket.on('message:send', async (payload: { conversationId: string; text?: string; imageUrl?: string; videoUrl?: string; repliedToId?: string }) => {
+  socket.on('message:send', async (payload: { conversationId: string; text?: string; imageUrl?: string; videoUrl?: string; audioUrl?: string; audioDuration?: number; repliedToId?: string }) => {
     try {
-  let { conversationId, text, imageUrl, videoUrl, repliedToId } = payload;
+  let { conversationId, text, imageUrl, videoUrl, audioUrl, audioDuration, repliedToId } = payload;
       // Basic validation
-      if (!conversationId || (!text && !imageUrl && !videoUrl)) {
+      if (!conversationId || (!text && !imageUrl && !videoUrl && !audioUrl)) {
         try { socket.emit('message:error', { conversationId: conversationId || null, reason: 'INVALID_PAYLOAD' }); } catch (_) {}
         try { console.warn('[socket] message:send invalid payload', { userId: user.id, conversationId, hasText: !!text, hasImage: !!imageUrl, hasVideo: !!videoUrl }); } catch (_) {}
         return;
@@ -1863,7 +1863,7 @@ io.on('connection', (socket: any) => {
 
       // Simple in-memory dedupe to avoid accidental double-sends within a short window
       const normalizedText = (text ?? '').trim();
-      const key = `${conversationId}|${user.id}|${normalizedText}|${imageUrl ?? ''}|${videoUrl ?? ''}`;
+      const key = `${conversationId}|${user.id}|${normalizedText}|${imageUrl ?? ''}|${videoUrl ?? ''}|${audioUrl ?? ''}`;
       const now = Date.now();
       const last = recentMessageKeys.get(key) || 0;
       if (now - last < MESSAGE_DEDUPE_WINDOW_MS) {
@@ -1886,6 +1886,8 @@ io.on('connection', (socket: any) => {
           text: text ?? null,
           imageUrl: imageUrl ?? null,
           videoUrl: videoUrl ?? null,
+          audioUrl: audioUrl ?? null,
+          audioDuration: audioDuration ?? null,
           repliedToId: repliedToId ?? null,
         },
         include: {
@@ -1903,6 +1905,8 @@ io.on('connection', (socket: any) => {
               text: true,
               imageUrl: true,
               videoUrl: true,
+              audioUrl: true,
+              audioDuration: true,
               senderId: true,
               sender: {
                 select: {
@@ -1921,11 +1925,12 @@ io.on('connection', (socket: any) => {
       try { console.log('[socket] message:send persisted', { userId: user.id, conversationId, messageId: msg.id }); } catch (_) {}
 
       // Update conversation last message metadata
+      const lastMessagePreview = text ?? (audioUrl ? '[voice]' : (videoUrl ? '[video]' : (imageUrl ? '[image]' : '')));
       await (prisma as any).conversation.update({
         where: { id: conversationId },
         data: {
           updatedAt: new Date(),
-          lastMessageText: text ?? (videoUrl ? '[video]' : (imageUrl ? '[image]' : '')),
+          lastMessageText: lastMessagePreview,
           lastSenderId: user.id,
         },
       });
@@ -1936,7 +1941,7 @@ io.on('connection', (socket: any) => {
           where: { id: conversationId },
           data: {
             updatedAt: new Date(),
-            lastMessageText: text ?? (videoUrl ? '[video]' : (imageUrl ? '[image]' : '')),
+            lastMessageText: lastMessagePreview,
             lastSenderId: user.id,
           },
         }).catch(() => null);
@@ -1944,7 +1949,7 @@ io.on('connection', (socket: any) => {
           where: { id: conversationId },
           data: {
             updatedAt: new Date(),
-            lastMessageText: text ?? (videoUrl ? '[video]' : (imageUrl ? '[image]' : '')),
+            lastMessageText: lastMessagePreview,
             lastSenderId: user.id,
           },
         }).catch(() => null);
@@ -1952,7 +1957,7 @@ io.on('connection', (socket: any) => {
           where: { id: conversationId },
           data: {
             updatedAt: new Date(),
-            lastMessageText: text ?? (videoUrl ? '[video]' : (imageUrl ? '[image]' : '')),
+            lastMessageText: lastMessagePreview,
             lastSenderId: user.id,
           },
         }).catch(() => null);
@@ -1966,8 +1971,10 @@ io.on('connection', (socket: any) => {
         senderPhotoUrl: (msg as any).sender?.profileImageUrl || null,
         text: msg.text,
         imageUrl: msg.imageUrl,
-        createdAt: msg.createdAt,
         videoUrl: msg.videoUrl,
+        audioUrl: msg.audioUrl,
+        audioDuration: msg.audioDuration,
+        createdAt: msg.createdAt,
         deliveredTo: msg.deliveredTo || [],
         readBy: msg.readBy || [],
         repliedTo: (msg as any).repliedTo ? {
@@ -1975,6 +1982,8 @@ io.on('connection', (socket: any) => {
           text: (msg as any).repliedTo.text,
           imageUrl: (msg as any).repliedTo.imageUrl,
           videoUrl: (msg as any).repliedTo.videoUrl,
+          audioUrl: (msg as any).repliedTo.audioUrl,
+          audioDuration: (msg as any).repliedTo.audioDuration,
           senderId: (msg as any).repliedTo.senderId,
           senderName: (msg as any).repliedTo.sender?.displayName || (msg as any).repliedTo.sender?.email?.split('@')[0] || 'Unknown',
         } : null,

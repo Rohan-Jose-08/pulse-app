@@ -20,12 +20,15 @@ abstract class IChatTransport {
   Future<void> ensureConnected();
   void joinConversation(String id);
   void leaveConversation(String id);
-  void sendMessage(
-      {required String conversationId,
-      String? text,
-      String? imageUrl,
-      String? videoUrl,
-      String? repliedToId});
+  void sendMessage({
+    required String conversationId,
+    String? text,
+    String? imageUrl,
+    String? videoUrl,
+    String? audioUrl,
+    int? audioDuration,
+    String? repliedToId,
+  });
   void setTyping(String conversationId, bool isTyping);
   void addReaction(
       {required String conversationId,
@@ -56,17 +59,22 @@ class NetworkChatTransport implements IChatTransport {
   void leaveConversation(String id) => _socket.leaveConversation(id);
 
   @override
-  void sendMessage(
-          {required String conversationId,
-          String? text,
-          String? imageUrl,
-          String? videoUrl,
-          String? repliedToId}) =>
+  void sendMessage({
+    required String conversationId,
+    String? text,
+    String? imageUrl,
+    String? videoUrl,
+    String? audioUrl,
+    int? audioDuration,
+    String? repliedToId,
+  }) =>
       _socket.sendMessage(
           conversationId: conversationId,
           text: text,
           imageUrl: imageUrl,
           videoUrl: videoUrl,
+          audioUrl: audioUrl,
+          audioDuration: audioDuration,
           repliedToId: repliedToId);
 
   @override
@@ -87,6 +95,27 @@ class NetworkChatTransport implements IChatTransport {
 
 /// Real Bluetooth mesh networking implementation with message relay,
 /// routing, duplicate detection, and multi-hop forwarding.
+///
+/// Architecture Overview:
+/// ┌─────────────────────────────────────────────────────────────┐
+/// │                    This Device                               │
+/// ├─────────────────────────────────────────────────────────────┤
+/// │  CENTRAL ROLE (flutter_blue_plus)                           │
+/// │  - Scans for nearby devices advertising our service         │
+/// │  - Connects to discovered peripherals                       │
+/// │  - Writes mesh packets to their GATT characteristics        │
+/// ├─────────────────────────────────────────────────────────────┤
+/// │  PERIPHERAL ROLE (BleAdvertiser native plugins)             │
+/// │  - Advertises our service UUID                              │
+/// │  - Runs GATT server with message/typing characteristics     │
+/// │  - Receives writes from connected centrals                  │
+/// │  - Forwards data to Dart via EventChannel                   │
+/// └─────────────────────────────────────────────────────────────┘
+///
+/// Message Flow:
+/// 1. User sends message → Create mesh packet → Broadcast via Central role
+/// 2. Other device's Peripheral receives → Native callback → EventChannel → Dart
+/// 3. Check for duplicates → Process message → Relay to other neighbors
 class BluetoothMeshChatTransport implements IChatTransport {
   final _messages = StreamController<Map<String, dynamic>>.broadcast();
   final _typing = StreamController<Map<String, dynamic>>.broadcast();
@@ -113,6 +142,12 @@ class BluetoothMeshChatTransport implements IChatTransport {
   Timer? _cleanupTimer;
   Timer? _neighborDiscoveryTimer;
   Timer? _relayTimer;
+
+  /// Subscription to BleAdvertiser incoming data stream (Peripheral role)
+  StreamSubscription<BleIncomingData>? _incomingDataSubscription;
+
+  /// Subscription to BleAdvertiser connection events
+  StreamSubscription<BleConnectionEvent>? _connectionEventSubscription;
 
   // Mesh networking constants
   static const int maxHops = 5;
@@ -150,9 +185,11 @@ class BluetoothMeshChatTransport implements IChatTransport {
     if (_started) return;
     _started = true;
     await _ensurePermissions();
-    // Kick off scanning for nearby devices
+    // Start listening for incoming data from GATT server (Peripheral role)
+    _setupIncomingDataListener();
+    // Kick off scanning for nearby devices (Central role)
     _startScanning();
-    // Start advertising our presence
+    // Start advertising our presence (Peripheral role)
     await _startAdvertising();
     // Start maintenance timers
     _startMaintenanceTimers();
@@ -160,7 +197,7 @@ class BluetoothMeshChatTransport implements IChatTransport {
 
   @override
   void joinConversation(String id) {
-    // No-op for stub.
+    // No-op for Bluetooth mesh - messages are broadcast to all nearby devices
   }
 
   @override
@@ -169,12 +206,15 @@ class BluetoothMeshChatTransport implements IChatTransport {
   }
 
   @override
-  void sendMessage(
-      {required String conversationId,
-      String? text,
-      String? imageUrl,
-      String? videoUrl,
-      String? repliedToId}) {
+  void sendMessage({
+    required String conversationId,
+    String? text,
+    String? imageUrl,
+    String? videoUrl,
+    String? audioUrl,
+    int? audioDuration,
+    String? repliedToId,
+  }) {
     final msgId =
         'bt_${DateTime.now().microsecondsSinceEpoch}_${currentUserUid}';
     final map = <String, dynamic>{
@@ -185,6 +225,8 @@ class BluetoothMeshChatTransport implements IChatTransport {
       'text': text,
       'imageUrl': imageUrl,
       'videoUrl': videoUrl,
+      'audioUrl': audioUrl,
+      'audioDuration': audioDuration,
       'reactions': <String, List<String>>{},
       'senderName': null,
       'senderPhotoUrl': null,
@@ -267,6 +309,10 @@ class BluetoothMeshChatTransport implements IChatTransport {
     _neighborDiscoveryTimer?.cancel();
     _relayTimer?.cancel();
 
+    // Cancel BleAdvertiser subscriptions
+    await _incomingDataSubscription?.cancel();
+    await _connectionEventSubscription?.cancel();
+
     // Stop advertising
     await BleAdvertiser.stopAdvertising();
 
@@ -300,6 +346,37 @@ class BluetoothMeshChatTransport implements IChatTransport {
     await _messages.close();
     await _typing.close();
     await _conversationUpdates.close();
+  }
+
+  /// Set up listener for incoming BLE data from GATT server (Peripheral role).
+  ///
+  /// When another device (acting as Central) connects and writes to our
+  /// GATT characteristics, the native code receives the data and forwards
+  /// it to Dart via EventChannel. This listener processes that data.
+  void _setupIncomingDataListener() {
+    // Listen for incoming mesh packets from connected Central devices
+    _incomingDataSubscription = BleAdvertiser.incomingData.listen((data) {
+      if (kDebugMode) {
+        debugPrint('📥 BLE Peripheral received ${data.data.length} bytes '
+            'from ${data.deviceAddress} (${data.type})');
+      }
+      // Process as mesh packet
+      _handleIncomingMeshPacket(data.data);
+    });
+
+    // Listen for connection events
+    _connectionEventSubscription =
+        BleAdvertiser.connectionEvents.listen((event) {
+      if (kDebugMode) {
+        debugPrint('🔗 BLE Peripheral connection: ${event.event}, '
+            'device: ${event.deviceAddress}, count: ${event.connectedCount}');
+      }
+      // Could update UI or track connected peripherals here
+    });
+
+    if (kDebugMode) {
+      debugPrint('📡 BLE Peripheral incoming data listener set up');
+    }
   }
 
   void _startScanning() {
@@ -523,6 +600,8 @@ class BluetoothMeshChatTransport implements IChatTransport {
       Permission.bluetooth,
       Permission.bluetoothScan,
       Permission.bluetoothConnect,
+      Permission
+          .bluetoothAdvertise, // Required for GATT server / peripheral role
       Permission.locationWhenInUse, // some stacks still require location
     ];
     await perms.request();
@@ -616,6 +695,15 @@ class BluetoothMeshChatTransport implements IChatTransport {
         }
       }
     }
+
+    // Also send via GATT server notifications to devices connected to us (Peripheral role)
+    // This handles the case where other devices connected to us as a Central
+    final charType =
+        packet.packetType == _PacketType.typing ? 'typing' : 'message';
+    await BleAdvertiser.sendToConnectedDevices(
+      data: data,
+      characteristicType: charType,
+    );
   }
 
   // Mesh networking helper methods
