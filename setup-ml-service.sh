@@ -8,7 +8,7 @@ echo ""
 
 # Check Python installation
 if ! command -v python3 &> /dev/null; then
-    echo "❌ Python 3 is not installed. Please install Python 3.8 or higher."
+    echo "Python 3 is not installed. Please install Python 3.8 or higher."
     exit 1
 fi
 
@@ -42,18 +42,18 @@ pip install -r requirements.txt
 if [ $? -eq 0 ]; then
     echo "✓ Dependencies installed successfully"
 else
-    echo "❌ Failed to install dependencies"
+    echo "Failed to install dependencies"
     exit 1
 fi
 
 # Check for .env file
 if [ ! -f ".env" ]; then
     echo ""
-    echo "⚠️  No .env file found!"
+    echo "No .env file found!"
     echo "Creating .env from .env.example..."
     cp .env.example .env
     echo ""
-    echo "📝 Please edit backend/ml-service/.env and set your DATABASE_URL"
+    echo "Please edit backend/ml-service/.env and set your DATABASE_URL"
     echo ""
 else
     echo "✓ .env file found"
