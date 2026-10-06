@@ -8,9 +8,9 @@ Write-Host ""
 # Check Python installation
 try {
     $pythonVersion = python --version 2>&1
-    Write-Host "✓ Python found: $pythonVersion" -ForegroundColor Green
+    Write-Host "Python found: $pythonVersion" -ForegroundColor Green
 } catch {
-    Write-Host "❌ Python is not installed. Please install Python 3.8 or higher." -ForegroundColor Red
+    Write-Host "Python is not installed. Please install Python 3.8 or higher." -ForegroundColor Red
     exit 1
 }
 
@@ -42,20 +42,20 @@ Write-Host "Installing Python dependencies..." -ForegroundColor Yellow
 pip install -r requirements.txt
 
 if ($LASTEXITCODE -eq 0) {
-    Write-Host "✓ Dependencies installed successfully" -ForegroundColor Green
+    Write-Host "Dependencies installed successfully" -ForegroundColor Green
 } else {
-    Write-Host "❌ Failed to install dependencies" -ForegroundColor Red
+    Write-Host "Failed to install dependencies" -ForegroundColor Red
     exit 1
 }
 
 # Check for .env file
 if (-not (Test-Path ".env")) {
     Write-Host ""
-    Write-Host "⚠️  No .env file found!" -ForegroundColor Yellow
+    Write-Host "No .env file found!" -ForegroundColor Yellow
     Write-Host "Creating .env from .env.example..." -ForegroundColor Yellow
     Copy-Item ".env.example" ".env"
     Write-Host ""
-    Write-Host "📝 Please edit backend\ml-service\.env and set your DATABASE_URL" -ForegroundColor Cyan
+    Write-Host "Please edit backend\ml-service\.env and set your DATABASE_URL" -ForegroundColor Cyan
     Write-Host ""
 } else {
     Write-Host "✓ .env file found" -ForegroundColor Green
